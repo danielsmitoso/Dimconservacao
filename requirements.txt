@@ -1,0 +1,5 @@
+streamlit>=1.52
+pandas
+openpyxl
+python-pptx
+numpy
