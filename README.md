@@ -16,13 +16,14 @@ contratado e exporta um relatório executivo em PowerPoint.
 
 ## Como abrir a ferramenta (sem instalar nada)
 
-Se o projeto já estiver publicado no Streamlit Community Cloud, basta abrir o link
-que foi compartilhado com você em qualquer navegador (Chrome, Edge) — não precisa
-instalar Python nem nada no seu computador.
+O app está publicado em **https://dimconservacao.streamlit.app** — basta abrir esse
+link em qualquer navegador (Chrome, Edge), não precisa instalar Python nem nada no
+seu computador.
 
-> **Pendente:** o link de publicação ainda não existe nesta versão — ver
-> `retroanalises/perguntas_pendentes.md`. Enquanto isso, use as instruções abaixo
-> para rodar localmente.
+> **Use só dados fictícios/de exemplo nesse link por enquanto.** A questão de dado
+> real de contrato num servidor de terceiros (Streamlit Cloud) ainda não foi resolvida
+> — ver `retroanalises/perguntas_pendentes.md` (pergunta 4). Compartilhe só o link do
+> app com a equipe, nunca o link do repositório GitHub.
 
 ## Como rodar localmente (para quem for desenvolver/testar)
 
@@ -77,26 +78,40 @@ Para fechar: volte no PowerShell e aperte `Ctrl+C`.
    - **Auditoria do Quasar** (aparece depois de gerar o inventário): extensão física por
      rodovia, cobertura do mapeamento, lacunas, km com canteiro central, alertas. Confira
      antes de usar os números.
-2. **Aba Roçada Manual**: escolha *Metas de performance* ou *Personalizado*, ajuste ciclos
-   e meses (chuva/seca). A **proposta de divisão de equipes** enche cada equipe até a
+2. **Aba Vegetação e Clima** (opcional, recomendada): estima os **ciclos de roçada pelo
+   crescimento da vegetação**. Informe a altura máxima do contrato (30 cm, 50 cm ou outra),
+   a altura pós-corte (3–5 cm), o solo, o estado (clima de referência já embutido para os
+   27 estados, não precisa de internet) ou a coordenada do trecho (consulta gratuita à
+   NASA POWER — envia só a coordenada) e as espécies predominantes com a % de cobertura.
+   O app mostra o crescimento mês a mês, quantos dias a vegetação leva para chegar à
+   altura máxima (prazo máximo para a equipe percorrer o trecho e voltar) e os ciclos de
+   chuva e seca. Com medições de campo (dias desde a roçada + altura medida), o modelo é
+   calibrado. O botão **"Usar estes ciclos..."** preenche as abas de roçada.
+3. **Aba Roçada Manual**: escolha *Metas de performance* ou *Personalizado*, ajuste ciclos
+   e meses (chuva/seca). **Ciclos são contados dentro de cada período** (ex.: 10 ciclos nos
+   7 meses de chuva), não por ano. A **proposta de divisão de equipes** enche cada equipe até a
    capacidade do ciclo, na ordem dos km, cortando o trecho onde a capacidade acaba —
    só a última equipe pode ter folga. Dá para aceitar uma ocupação máxima acima de 100%
    e impedir que uma equipe atravesse de uma rodovia para outra.
-3. **Aba Roçada Mecanizada**: a área mecanizada é distribuída entre os equipamentos que
+4. **Aba Roçada Mecanizada**: a área mecanizada é distribuída entre os equipamentos que
    o Quasar indica (Trator 4.7m, Trator 1.7m, Trator com braço articulado, Eixo-zero,
    Spider). Mostra a frota necessária por equipamento (somável), o equipamento
    recomendado por trecho (com o mix e a justificativa técnica) e a divisão de trechos
    por unidade de cada equipamento. Informe a frota disponível para ver sobra/falta.
-4. **Aba Full Service**: aceiro, drenagem, capina, refilamento, calçada, placas, remoção de lixo.
-5. **Aba Especialistas**: EPS/barreira, defensa metálica, NC, varrição, poda.
-6. **Aba Análise de Contrato**: informe quantas equipes/unidades o contrato atual prevê por
+5. **Aba Full Service**: aceiro, drenagem, capina, refilamento, calçada, placas, remoção de lixo.
+6. **Aba Especialistas**: EPS/barreira, defensa metálica, NC, varrição, poda.
+7. **Aba Análise de Contrato**: informe quantas equipes/unidades o contrato atual prevê por
    atividade e veja déficit/excedente (com %).
-7. **Aba Exportar Relatório**: baixe (a) o **PowerPoint executivo** e (b) a **memória de
+8. **Aba Exportar Relatório**: baixe (a) o **PowerPoint executivo** e (b) a **memória de
    cálculo em Excel**, com premissas em azul e o cálculo passo a passo em fórmulas do
    Excel, para conferir qualquer número.
 
 > **Tudo se atualiza sozinho:** números e textos são recalculados a cada alteração, e os
 > arquivos para download são montados no momento do clique, com o estado atual da tela.
+>
+> **Campos pré-preenchidos** (quantidades de Full Service/Especialistas e o "Contratado"
+> da Análise de Contrato) acompanham o inventário e o cálculo enquanto você não mexer
+> neles. Se você digitar um valor próprio, ele é mantido mesmo que o inventário mude.
 
 ## Estrutura do projeto
 
@@ -108,8 +123,11 @@ modules/
   inventario.py               # leitura/validação da planilha de inventário
   quasar.py                   # leitura, auditoria e agregação do export Quasar (satélite)
   mecanizacao.py              # equipamento por trecho, frota mecanizada
+  crescimento.py              # modelo de crescimento da vegetação -> ciclos (clima dos 27 estados embutido)
   export_excel.py             # memória de cálculo em Excel (fórmulas)
   export_pptx.py              # geração do relatório executivo em PowerPoint
+tests/
+  test_app.py                 # teste automatizado (roda o app de verdade com o inventário de exemplo)
 retroanalises/
   retro_log.md                 # histórico da rotina diária de retroanálise (apêndice)
   perguntas_pendentes.md       # perguntas em aberto para o usuário
@@ -146,10 +164,23 @@ não é automatizável. Passo a passo:
    - Na página inicial do GitHub, clique em "New" (novo repositório).
    - Dê um nome (ex.: `dimconservacao`), marque como **privado** (recomendado,
      mesmo com dados fictícios) e crie.
-   - Suba os arquivos desta pasta — pelo site do GitHub (arrastar e soltar os
-     arquivos em "uploading an existing file") é o caminho mais simples para
-     quem não usa `git` no dia a dia; não é necessário subir a pasta
-     `dados_quasar/` (já está no `.gitignore` por conter dado sensível).
+   - Suba os arquivos desta pasta.
+   > **⚠️ Atenção — o `.gitignore` NÃO funciona no upload manual pelo site do
+   > GitHub.** Se você usar "uploading an existing file" e arrastar os
+   > arquivos, o GitHub sobe tudo que for arrastado, mesmo o que está no
+   > `.gitignore` (ex.: `dados_quasar/`, que tem dado real sensível) — isso já
+   > aconteceu uma vez neste projeto (ver `retroanalises/retro_log.md`,
+   > 2026-09-22 noite). Duas formas seguras de evitar:
+   > - **Recomendado:** usar o **GitHub Desktop** (app gratuito oficial,
+   >   https://desktop.github.com) — "Add local repository" apontando para
+   >   esta pasta e "Publish repository". Ele respeita o `.gitignore`
+   >   automaticamente.
+   > - **Pelo site:** arraste só as pastas/arquivos que devem ir (`app.py`,
+   >   `README.md`, `requirements.txt`, `.gitignore`, `modules/`, `assets/`,
+   >   `dados_exemplo/`, `retroanalises/`) — **nunca** arraste `dados_quasar/`.
+   > Se algo sensível subir por engano, apagar o arquivo num novo commit NÃO
+   > basta — ele continua acessível no histórico do Git. É preciso apagar e
+   > recriar o repositório do zero.
 3. **Criar uma conta gratuita no Streamlit Community Cloud:**
    - Acesse https://share.streamlit.io/signup (ou o botão "Sign up" em
      https://streamlit.io/cloud).
@@ -178,3 +209,18 @@ não é automatizável. Passo a passo:
   caminho completo).
 - Para checar sintaxe sem erro de encoding: leia o arquivo com
   `codecs.open(arquivo, 'r', 'utf-8')` antes de `ast.parse`.
+
+### Teste automatizado (antes de publicar qualquer mudança)
+
+Na pasta do projeto, rode:
+
+```
+C:\Users\18-103236\AppData\Local\Programs\Python\Python312\python.exe tests/test_app.py
+```
+
+O teste abre o app "por baixo dos panos" (sem navegador), carrega o inventário
+de exemplo e confere que: as quantidades de Full Service/Especialistas batem
+com o inventário; o "Contratado" acompanha o dimensionado; uma edição manual
+não é apagada; e o modelo de crescimento funciona para os 27 estados e preenche
+as abas de roçada. Leva cerca de 1 minuto e termina com `6/6 testes passaram`.
+Não exige instalar nada além do que já está no `requirements.txt`.

@@ -13,6 +13,7 @@ clique, com o estado atual.
 """
 import importlib
 import io
+import math
 import re
 import tempfile
 from datetime import date
@@ -29,12 +30,13 @@ from modules import inventario as inv
 from modules import mecanizacao
 from modules import parametros_padrao as pp
 from modules import quasar
+from modules import crescimento
 
 # O Streamlit mantém os módulos em memória entre execuções: se o código for
 # atualizado com o app aberto, uma versão antiga continua rodando (erros do tipo
 # "takes 2 arguments but 3 were given"). Recarregar aqui, na ordem das
 # dependências, garante que a tela sempre use o código mais recente do disco.
-for _m in (pp, quasar, inv, dim, mecanizacao, export_excel, export_pptx, erros):
+for _m in (pp, quasar, inv, dim, mecanizacao, export_excel, export_pptx, erros, crescimento):
     importlib.reload(_m)
 
 st.set_page_config(page_title="DimConservação", page_icon="🌱", layout="wide")
@@ -109,6 +111,48 @@ def registrar(grupo, nome, unidade_qtd, unidade_resultado, quantidade, origem, p
         "quantidade": float(quantidade), "origem_quantidade": origem, "produtividade": float(produtividade),
         "ciclos_chuva": cc, "meses_chuva": mc, "ciclos_seca": cs, "meses_seca": ms, "fonte": fonte,
     })
+
+
+def sincronizar_padrao(chave: str, padrao):
+    """Faz um campo editável acompanhar o valor calculado enquanto o usuário
+    não o editar. O Streamlit ignora `value=` depois que a chave já existe, então
+    sem isso o campo fica congelado no primeiro valor calculado (ex.: 0, antes do
+    inventário). Regra: se o campo ainda está igual ao último padrão calculado,
+    segue o novo; se o usuário mudou, a edição dele é preservada."""
+    chave_padrao = f"_padrao_{chave}"
+    anterior = st.session_state.get(chave_padrao)
+    if chave not in st.session_state or st.session_state[chave] == anterior:
+        st.session_state[chave] = padrao
+    st.session_state[chave_padrao] = padrao
+
+
+def campo_ciclo(rotulo: str, chave: str, **kwargs) -> int:
+    """Campo de ciclos/meses das abas de roçada. O valor vive em
+    st.session_state[chave]; o widget usa uma chave com versão, renovada quando a
+    aba Vegetação e Clima aplica ciclos novos. Motivo: o Streamlit ignora (e chega a
+    exibir errado) um valor gravado na sessão para um widget que ainda não estava na
+    tela -- o campo aparecia "1" enquanto o cálculo usava 5."""
+    versao = st.session_state.get("veg_versao", 0)
+    valor = st.number_input(rotulo, value=int(st.session_state[chave]), key=f"{chave}_w{versao}", **kwargs)
+    st.session_state[chave] = valor
+    return valor
+
+
+def ciclos_do_modelo(prefixo: str) -> bool:
+    """True se os ciclos/meses da aba de roçada ainda são os aplicados pela aba
+    Vegetação e Clima (o usuário não os editou depois)."""
+    aplicado = st.session_state.get("veg_aplicado")
+    return bool(aplicado) and all(
+        st.session_state.get(f"{prefixo}_{k}") == v for k, v in aplicado["valores"].items()
+    )
+
+
+def legenda_ciclos(prefixo: str):
+    if ciclos_do_modelo(prefixo):
+        st.caption(f"🌿 Ciclos e meses vindos da aba Vegetação e Clima — {st.session_state['veg_aplicado']['texto']}.")
+    else:
+        st.caption("Ciclos digitados aqui ou padrão de referência. Para estimá-los pelo crescimento da vegetação "
+                   "(espécies, clima e solo da região), use a aba 🌿 Vegetação e Clima.")
 
 
 def colunas_trecho(df: pd.DataFrame) -> pd.DataFrame:
@@ -197,6 +241,11 @@ def mostrar_divisao(df_base, coluna_qtd, produtividade_unidade, ciclos, meses, r
 # Estado (a cada execução tudo é recalculado; só as escolhas do usuário persistem)
 # ---------------------------------------------------------------------------
 st.session_state["resultados_atividades"] = {}
+# Ciclos de roçada: valor guardado na sessão (padrão de referência na 1ª vez); a aba
+# Vegetação e Clima pode substituí-lo -- ver campo_ciclo().
+for _pre in ("man", "mec"):
+    for _suf, _campo in (("cc", "ciclos_chuva"), ("mc", "meses_chuva"), ("cs", "ciclos_seca"), ("ms", "meses_seca")):
+        st.session_state.setdefault(f"{_pre}_{_suf}", pp.CICLOS_PADRAO["rocada"][_campo])
 st.session_state["resumo_rocada"] = {}
 memoria_atividades: list[dict] = []
 memoria_divisoes: dict[str, pd.DataFrame] = {}
@@ -219,8 +268,8 @@ with col_status:
         st.caption("Informe a unidade ao lado para que ela conste nos relatórios exportados.")
 nome_unidade = unidade_avaliada or "Unidade não informada"
 
-aba_inv, aba_manual, aba_mec, aba_fs, aba_esp, aba_analise, aba_export = st.tabs(
-    ["📋 Inventário", "👷 Roçada Manual", "🚜 Roçada Mecanizada", "📦 Full Service",
+aba_inv, aba_veg, aba_manual, aba_mec, aba_fs, aba_esp, aba_analise, aba_export = st.tabs(
+    ["📋 Inventário", "🌿 Vegetação e Clima", "👷 Roçada Manual", "🚜 Roçada Mecanizada", "📦 Full Service",
      "🛠️ Especialistas", "📊 Análise de Contrato", "📤 Exportar Relatório"]
 )
 
@@ -382,6 +431,185 @@ with aba_inv:
                 st.caption("Polígonos com mais de um equipamento indicado dividem a área igualmente entre eles.")
 
 # ---------------------------------------------------------------------------
+# ABA: Vegetação e Clima (modelo de crescimento -> ciclos de roçada)
+# ---------------------------------------------------------------------------
+with aba_veg:
+    st.subheader("Vegetação e Clima — ciclos de roçada pelo crescimento da vegetação")
+    st.caption(
+        "O ciclo é a frequência necessária para a vegetação não passar da altura máxima do contrato: "
+        "**intervalo entre passagens = (altura máxima − altura pós-corte) ÷ crescimento (cm/dia)**. "
+        "O crescimento depende das espécies (temperatura-base e velocidade de cada uma), da temperatura e da chuva "
+        "de cada mês e do solo. Resultado: ciclos sugeridos para as abas de roçada."
+    )
+
+    st.markdown("#### 1. Contrato")
+    v1, v2, v3 = st.columns(3)
+    opcao_hmax = v1.selectbox("Altura máxima permitida (contrato)", ["30 cm", "50 cm", "Outra"],
+                              key="veg_hmax_opcao", help="30 cm é a grande maioria dos contratos; alguns usam 50 cm.")
+    if opcao_hmax == "Outra":
+        h_max = v1.number_input("Altura máxima (cm)", min_value=5.0, value=30.0, step=5.0, key="veg_hmax_outra")
+    else:
+        h_max = float(opcao_hmax.split()[0])
+    h0 = v2.number_input("Altura pós-corte (cm)", min_value=0.0, max_value=20.0,
+                         value=crescimento.ALTURA_POS_CORTE_PADRAO_CM, step=0.5, key="veg_h0",
+                         help="Não é contratual: é o que a roçadeira deixa (normalmente 3 a 5 cm).")
+    solo = v3.selectbox("Solo predominante", list(crescimento.SOLOS), index=list(crescimento.SOLOS).index(crescimento.SOLO_PADRAO),
+                        key="veg_solo", help="Argiloso retém mais água e mantém algum crescimento na seca; arenoso seca rápido.")
+    if h_max <= h0:
+        st.error("A altura máxima precisa ser maior que a altura pós-corte.")
+
+    st.markdown("#### 2. Localidade e clima")
+    nomes_uf = {f"{v['nome']} ({uf})": uf for uf, v in crescimento.CLIMA_UF.items()}
+    rotulos_uf = list(nomes_uf)
+    l1, l2 = st.columns([2, 3])
+    rotulo_uf = l1.selectbox("Estado", rotulos_uf, index=rotulos_uf.index("São Paulo (SP)"), key="veg_uf")
+    clima = crescimento.CLIMA_UF[nomes_uf[rotulo_uf]]
+    with l2:
+        usar_coord = st.checkbox("Conheço a coordenada do trecho (mais preciso que o padrão do estado)", key="veg_usar_coord")
+        if usar_coord:
+            k1, k2, k3 = st.columns([2, 2, 2])
+            lat = k1.number_input("Latitude", min_value=-34.0, max_value=6.0, value=float(clima["lat"]), format="%.4f", key="veg_lat")
+            lon = k2.number_input("Longitude", min_value=-74.0, max_value=-28.0, value=float(clima["lon"]), format="%.4f", key="veg_lon")
+            k3.markdown("&nbsp;")
+            if k3.button("Buscar clima deste ponto"):
+                try:
+                    st.session_state["veg_clima_coord"] = crescimento.buscar_clima_coordenada(lat, lon)
+                except Exception as e:  # rede bloqueada, API fora do ar etc.
+                    st.session_state.pop("veg_clima_coord", None)
+                    st.error(f"Não foi possível consultar a NASA POWER ({type(e).__name__}). Usando o padrão do estado.")
+            clima_coord = st.session_state.get("veg_clima_coord")
+            if clima_coord and abs(clima_coord["lat"] - lat) < 1e-6 and abs(clima_coord["lon"] - lon) < 1e-6:
+                clima = clima_coord
+            else:
+                st.caption("Informe o ponto e clique em **Buscar clima deste ponto** (consulta gratuita à NASA POWER; "
+                           "envia só a coordenada). Até lá, vale o padrão do estado.")
+    st.caption(f"Clima em uso: **{clima['referencia']}** · Fonte: {clima.get('fonte', crescimento.FONTE_CLIMA)}")
+
+    st.markdown("#### 3. Vegetação predominante")
+    st.caption(
+        "Informe as espécies mais presentes e a % aproximada de cobertura. O crescimento é a **média ponderada** "
+        "pela cobertura (o objetivo é não estourar a altura em trechos grandes, de 100–200 m; pontos isolados se "
+        "corrigem na operação). Se não souber, deixe 'Vegetação mista / não identificada'."
+    )
+    df_comp = st.data_editor(
+        pd.DataFrame([{"Espécie": crescimento.ESPECIE_PADRAO, "Cobertura (%)": 100.0}]),
+        key="veg_composicao", num_rows="dynamic", hide_index=True, width="stretch",
+        column_config={
+            "Espécie": st.column_config.SelectboxColumn(options=list(crescimento.ESPECIES), required=True),
+            "Cobertura (%)": st.column_config.NumberColumn(min_value=0.0, max_value=100.0, step=5.0, required=True),
+        },
+    )
+    composicao = {}
+    for _, linha in df_comp.dropna().iterrows():
+        composicao[linha["Espécie"]] = composicao.get(linha["Espécie"], 0.0) + float(linha["Cobertura (%)"])
+    soma_cob = sum(composicao.values())
+    if composicao and abs(soma_cob - 100) > 0.5:
+        st.info(f"As coberturas somam {soma_cob:.0f}% — o cálculo usa as proporções entre elas (normaliza para 100%).")
+    with st.expander("Parâmetros das espécies (temperatura-base, velocidade e fonte)"):
+        st.dataframe(pd.DataFrame([
+            {"Espécie": n, "Temperatura-base (°C)": e["tb"], "cm por grau-dia": e["k"], "Fonte": e["fonte"]}
+            for n, e in crescimento.ESPECIES.items()
+        ]), width="stretch", hide_index=True)
+
+    st.markdown("#### 4. Calibração com dado de campo (opcional)")
+    calibracao = 1.0
+    with st.expander("Tenho medições de altura em campo"):
+        st.caption(
+            "Para cada ponto medido: o mês da medição, quantos dias se passaram desde a última roçada e a altura "
+            "medida. O app compara o crescimento real com o do modelo e ajusta todos os meses pelo mesmo fator. "
+            "A literatura usada vem de pastagem adubada — na faixa de domínio o crescimento real costuma ser menor, "
+            "por isso calibrar é o que torna o número confiável para contrato."
+        )
+        df_obs = st.data_editor(
+            pd.DataFrame({"Mês": pd.Series(dtype="str"), "Dias desde a última roçada": pd.Series(dtype="float"),
+                          "Altura medida (cm)": pd.Series(dtype="float")}),
+            key="veg_obs", num_rows="dynamic", hide_index=True, width="stretch",
+            column_config={
+                "Mês": st.column_config.SelectboxColumn(options=crescimento.MESES, required=True),
+                "Dias desde a última roçada": st.column_config.NumberColumn(min_value=1, step=1),
+                "Altura medida (cm)": st.column_config.NumberColumn(min_value=0.0, step=1.0),
+            },
+        )
+        observacoes = [
+            {"mes": crescimento.MESES.index(r["Mês"]), "dias": r["Dias desde a última roçada"], "altura_cm": r["Altura medida (cm)"]}
+            for _, r in df_obs.dropna().iterrows() if r["Mês"] in crescimento.MESES
+        ]
+        fator = crescimento.fator_calibracao(observacoes, clima, composicao, solo, h0) if observacoes else None
+        if fator:
+            if st.checkbox(f"Aplicar fator de calibração {fator:.2f} (medições: {len(observacoes)})", value=True, key="veg_usar_fator"):
+                calibracao = fator
+        elif observacoes:
+            st.warning("Nenhuma medição válida: a altura medida precisa ser maior que a altura pós-corte.")
+        st.caption("📷 Em estudo: ler a altura a partir de uma foto com régua/estaca graduada no enquadramento.")
+
+    st.markdown("#### 5. Resultado")
+    taxas = crescimento.taxa_mensal(clima, composicao, solo, calibracao)
+    sincronizar_padrao("veg_meses_alto", [crescimento.MESES[i] for i in crescimento.meses_crescimento_alto(taxas)])
+    meses_alto_sel = st.multiselect(
+        "Meses do período de chuva / crescimento alto (os demais formam o período de seca)", crescimento.MESES,
+        key="veg_meses_alto",
+        help="Sugerido: meses com crescimento acima da média do ano. No Sul, onde chove o ano todo, quem separa os "
+             "períodos é o frio do inverno.",
+    )
+    idx_alto = sorted(crescimento.MESES.index(m) for m in meses_alto_sel)
+    idx_baixo = [i for i in range(12) if i not in idx_alto]
+    criterio_rotulo = st.radio(
+        "Critério", ["Mês mais crítico do período (recomendado)", "Média do período"], horizontal=True, key="veg_criterio",
+        help="Mês mais crítico: a equipe dá conta mesmo no mês em que o capim cresce mais rápido. Média: dimensiona "
+             "menos, mas no mês de pico parte dos trechos pode passar da altura.",
+    )
+    criterio = "critico" if criterio_rotulo.startswith("Mês") else "media"
+
+    df_mensal = pd.DataFrame({
+        "Mês": crescimento.MESES, "Temperatura média (°C)": clima["temp_c"], "Chuva (mm)": clima["chuva_mm"],
+        "Crescimento (cm/dia)": [round(t, 2) for t in taxas],
+        "Período": ["Chuva" if i in idx_alto else "Seca" for i in range(12)],
+    })
+    g1, g2 = st.columns([3, 2])
+    g1.bar_chart(df_mensal, x="Mês", y="Crescimento (cm/dia)", color="#5E22F3", height=260, sort=False)
+    g2.dataframe(df_mensal, hide_index=True, width="stretch", height=260)
+
+    if not idx_alto or not idx_baixo:
+        st.warning("Deixe pelo menos um mês em cada período (chuva e seca).")
+    elif h_max > h0:
+        res_alto = crescimento.ciclos_periodo(taxas, idx_alto, h_max, h0, criterio)
+        res_baixo = crescimento.ciclos_periodo(taxas, idx_baixo, h_max, h0, criterio)
+        r1, r2 = st.columns(2)
+        for col, nome_p, res, n_meses in ((r1, "chuva", res_alto, len(idx_alto)), (r2, "seca", res_baixo, len(idx_baixo))):
+            with col:
+                st.markdown(f"**Período de {nome_p}** — {n_meses} meses")
+                if res["intervalo_dias"]:
+                    st.metric("Ciclos no período (arredondado para cima)", math.ceil(res["ciclos"]),
+                              help=f"Valor exato: {res['ciclos']:.2f} ciclos.")
+                    st.caption(
+                        f"Crescimento {res['taxa']:.2f} cm/dia → leva **{res['intervalo_dias']:.0f} dias** para ir de "
+                        f"{h0:g} a {h_max:g} cm. É o prazo máximo para a equipe percorrer o trecho inteiro e voltar ao mesmo ponto."
+                    )
+                else:
+                    st.metric("Ciclos no período", "0")
+                    st.caption("Sem crescimento relevante neste período (frio ou seco demais para as espécies informadas).")
+        ciclos_sug = {"cc": max(1, math.ceil(res_alto["ciclos"])), "mc": len(idx_alto),
+                      "cs": max(1, math.ceil(res_baixo["ciclos"])), "ms": len(idx_baixo)}
+        ref = pp.CICLOS_PADRAO["rocada"]
+        st.caption(
+            f"Para comparar — referência padrão das abas de roçada: {ref['ciclos_chuva']} ciclos em {ref['meses_chuva']} meses "
+            f"de chuva e {ref['ciclos_seca']} em {ref['meses_seca']} meses de seca ({ref['fonte']})."
+        )
+        if st.button("✅ Usar estes ciclos nas abas Roçada Manual e Roçada Mecanizada", type="primary"):
+            for pre in ("man", "mec"):
+                for chave, valor in ciclos_sug.items():
+                    st.session_state[f"{pre}_{chave}"] = valor
+            st.session_state["veg_versao"] = st.session_state.get("veg_versao", 0) + 1
+            st.session_state["veg_aplicado"] = {
+                "valores": ciclos_sug,
+                "texto": (f"Modelo de crescimento — clima {clima['referencia']} ({rotulo_uf}); altura máx. {h_max:g} cm; "
+                          f"pós-corte {h0:g} cm; solo {solo.lower()}; critério: {criterio_rotulo}; "
+                          f"calibração {calibracao:.2f}; espécies: "
+                          + ", ".join(f"{e} {p:.0f}%" for e, p in composicao.items())),
+            }
+            st.success("Ciclos e meses aplicados nas abas de roçada (você ainda pode editar lá).")
+
+# ---------------------------------------------------------------------------
 # ABA: Roçada Manual
 # ---------------------------------------------------------------------------
 with aba_manual:
@@ -411,14 +639,15 @@ with aba_manual:
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("**Cenário chuva**")
-            ciclos_chuva = st.number_input("Ciclos/ano (chuva)", min_value=1, value=pp.CICLOS_PADRAO["rocada"]["ciclos_chuva"], key="man_cc")
-            meses_chuva = st.number_input("Meses do período de chuva", min_value=1, max_value=12, value=pp.CICLOS_PADRAO["rocada"]["meses_chuva"], key="man_mc")
+            ciclos_chuva = campo_ciclo("Ciclos no período de chuva", "man_cc", min_value=1, help="Quantas passagens completas no trecho DENTRO deste período (não por ano): o cálculo divide os dias do período por este número.")
+            meses_chuva = campo_ciclo("Meses do período de chuva", "man_mc", min_value=1, max_value=12)
         with c2:
             st.markdown("**Cenário seca**")
-            ciclos_seca = st.number_input("Ciclos/ano (seca)", min_value=1, value=pp.CICLOS_PADRAO["rocada"]["ciclos_seca"], key="man_cs")
-            meses_seca = st.number_input("Meses do período de seca", min_value=1, max_value=12, value=pp.CICLOS_PADRAO["rocada"]["meses_seca"], key="man_ms")
+            ciclos_seca = campo_ciclo("Ciclos no período de seca", "man_cs", min_value=1, help="Quantas passagens completas no trecho DENTRO deste período (não por ano): o cálculo divide os dias do período por este número.")
+            meses_seca = campo_ciclo("Meses do período de seca", "man_ms", min_value=1, max_value=12)
 
         avisar_meses(meses_chuva, meses_seca)
+        legenda_ciclos("man")
         resultado = dim.dimensionar_chuva_seca(area_total, produtividade, ciclos_chuva, meses_chuva, ciclos_seca, meses_seca)
         pico_m = resultado["pico"]
 
@@ -504,13 +733,14 @@ with aba_mec:
         c1, c2 = st.columns(2)
         with c1:
             st.markdown("**Cenário chuva**")
-            ciclos_chuva_m = st.number_input("Ciclos/ano (chuva)", min_value=1, value=pp.CICLOS_PADRAO["rocada"]["ciclos_chuva"], key="mec_cc")
-            meses_chuva_m = st.number_input("Meses do período de chuva", min_value=1, max_value=12, value=pp.CICLOS_PADRAO["rocada"]["meses_chuva"], key="mec_mc")
+            ciclos_chuva_m = campo_ciclo("Ciclos no período de chuva", "mec_cc", min_value=1, help="Quantas passagens completas no trecho DENTRO deste período (não por ano): o cálculo divide os dias do período por este número.")
+            meses_chuva_m = campo_ciclo("Meses do período de chuva", "mec_mc", min_value=1, max_value=12)
         with c2:
             st.markdown("**Cenário seca**")
-            ciclos_seca_m = st.number_input("Ciclos/ano (seca)", min_value=1, value=pp.CICLOS_PADRAO["rocada"]["ciclos_seca"], key="mec_cs")
-            meses_seca_m = st.number_input("Meses do período de seca", min_value=1, max_value=12, value=pp.CICLOS_PADRAO["rocada"]["meses_seca"], key="mec_ms")
+            ciclos_seca_m = campo_ciclo("Ciclos no período de seca", "mec_cs", min_value=1, help="Quantas passagens completas no trecho DENTRO deste período (não por ano): o cálculo divide os dias do período por este número.")
+            meses_seca_m = campo_ciclo("Meses do período de seca", "mec_ms", min_value=1, max_value=12)
         avisar_meses(meses_chuva_m, meses_seca_m)
+        legenda_ciclos("mec")
 
         if areas_eq.empty:
             st.info("Não há área mecanizada no inventário — nada a dimensionar nesta aba.")
@@ -520,6 +750,11 @@ with aba_mec:
             st.caption(
                 "Cada equipamento atende a área que a análise indica para ele (não é 'se um só fizesse tudo'), "
                 "então os números somam. Ajuste produtividade e frota disponível conforme a realidade."
+            )
+            st.info(
+                "💡 'Qtd. disponível na frota' começa em 0 para todos os equipamentos — a coluna 'Situação da "
+                "frota' na tabela abaixo só mostra sobra/falta depois que você preencher a frota real de cada um.",
+                icon="💡",
             )
             cab = st.columns([3, 2, 2, 2])
             for col, t_ in zip(cab, ["Equipamento", "Produtividade (m²/dia)", "Qtd. disponível na frota", "Área atendida (m²)"]):
@@ -639,17 +874,23 @@ with aba_fs:
     if df_inv is None:
         st.warning("Carregue o inventário na aba Inventário primeiro.")
     else:
-        st.caption("Baseado no escopo do FS 4.0 (RioSP): roçada + aceiro + drenagem + capina + refilamento + calçada + placas + remoção de lixo.")
+        st.caption(
+            "Baseado no escopo do FS 4.0 (RioSP): roçada + aceiro + drenagem + capina + refilamento + calçada + "
+            "placas + remoção de lixo. A roçada é dimensionada nas abas Roçada Manual/Mecanizada — aqui ficam só "
+            "as demais atividades do pacote."
+        )
         linhas_relatorio = []
+        sem_dado = []
         for nome_ativ, cfg in pp.FULL_SERVICE_ATIVIDADES.items():
             coluna = pp.COLUNA_INVENTARIO_POR_ATIVIDADE.get(nome_ativ)
             tem_coluna = bool(coluna and coluna in df_inv.columns)
             quantidade_padrao = float(df_inv[coluna].sum()) if tem_coluna else 0.0
 
             with st.expander(f"{nome_ativ}  —  {quantidade_padrao:,.1f} {cfg['unidade']} no inventário"):
+                sincronizar_padrao(f"fs_qtd_{nome_ativ}", quantidade_padrao)
                 quantidade = st.number_input(
                     f"Quantidade ({cfg['unidade']})" + ("" if tem_coluna else " — não há coluna no inventário, informe manualmente"),
-                    min_value=0.0, value=quantidade_padrao, key=f"fs_qtd_{nome_ativ}",
+                    min_value=0.0, key=f"fs_qtd_{nome_ativ}",
                 )
                 col1, col2, col3 = st.columns(3)
                 meta = col1.number_input("Meta/dia por equipe", min_value=0.01, value=float(cfg["meta_dia"]), key=f"fs_meta_{nome_ativ}")
@@ -674,6 +915,16 @@ with aba_fs:
                 registrar("Full Service", nome_ativ, cfg["unidade"], "equipe(s)", quantidade,
                           f"Inventário: coluna {coluna}" if tem_coluna and quantidade == quantidade_padrao else "Informada manualmente",
                           meta, cchuva, mchuva, cseca, mseca, cfg["fonte"])
+                if quantidade <= 0:
+                    sem_dado.append(nome_ativ)
+        if sem_dado:
+            st.info(
+                f"💡 {len(sem_dado)} de {len(pp.FULL_SERVICE_ATIVIDADES)} atividades estão com quantidade zero "
+                f"({', '.join(sem_dado)}) — ainda assim aparecem na Análise de Contrato e nos relatórios como "
+                "'0 / Conforme'. Se o inventário veio só do Quasar (que não cobre essas atividades), abra o "
+                "expansor de cada uma e informe a quantidade manualmente, se aplicável a este contrato.",
+                icon="💡",
+            )
         st.session_state["resultados_atividades"]["Full Service"] = linhas_relatorio
 
 # ---------------------------------------------------------------------------
@@ -683,6 +934,7 @@ with aba_esp:
     st.subheader("Dimensionamento — Equipes Especialistas")
     st.caption("EPS/barreira, defensa metálica, NC, varrição e poda — geralmente fora do pacote Full Service.")
     linhas_relatorio = []
+    sem_dado = []
     for nome_ativ, cfg in pp.ESPECIALISTAS_ATIVIDADES.items():
         coluna = pp.COLUNA_INVENTARIO_POR_ATIVIDADE.get(nome_ativ)
         if coluna and df_inv is not None and coluna in df_inv.columns:
@@ -691,9 +943,12 @@ with aba_esp:
             quantidade_padrao = 0.0
 
         with st.expander(f"{nome_ativ}"):
+            # Acompanha o inventário (inclusive troca de arquivo/origem) até o
+            # usuário editar o campo -- ver sincronizar_padrao().
+            sincronizar_padrao(f"esp_qtd_{nome_ativ}", quantidade_padrao)
             quantidade = st.number_input(
                 f"Quantidade ({cfg['unidade']}) — {'preenchido do inventário, ajuste se necessário' if coluna else 'não há coluna no inventário, informe manualmente'}",
-                min_value=0.0, value=quantidade_padrao, key=f"esp_qtd_{nome_ativ}",
+                min_value=0.0, key=f"esp_qtd_{nome_ativ}",
             )
 
             modo_reativo = False
@@ -734,6 +989,8 @@ with aba_esp:
                 registrar("Especialistas", f"{nome_ativ} (reativo)", "acionamento(s)/ano", "equipe(s)", volume_anual,
                           f"Taxa de {taxa:g} acionamento(s)/km/ano × {extensao_km_ativ:,.1f} km do inventário",
                           meta_reativo, 1, 12, 1, 12, cfg.get("fonte_reativo", "estimativa (a validar)"))
+                if coluna and quantidade <= 0:
+                    sem_dado.append(nome_ativ)
             else:
                 col1, col2, col3 = st.columns(3)
                 meta = col1.number_input("Meta/dia por equipe", min_value=0.01, value=float(cfg["meta_dia"]), key=f"esp_meta_{nome_ativ}")
@@ -759,6 +1016,16 @@ with aba_esp:
                 registrar("Especialistas", nome_ativ, cfg["unidade"], "equipe(s)", quantidade,
                           f"Inventário: coluna {coluna}" if veio_do_inventario else "Informada manualmente",
                           meta, cchuva, mchuva, cseca, mseca, cfg["fonte"])
+                if coluna and quantidade <= 0:
+                    sem_dado.append(nome_ativ)
+    if sem_dado:
+        st.info(
+            f"💡 {len(sem_dado)} atividade(s) têm coluna própria no inventário, mas estão com quantidade zero "
+            f"({', '.join(sem_dado)}) — ainda assim aparecem na Análise de Contrato e nos relatórios como "
+            "'0 / Conforme'. Se o inventário veio só do Quasar (que não cobre EPS/barreira e defensa), abra o "
+            "expansor de cada uma e informe a quantidade manualmente, se aplicável a este contrato.",
+            icon="💡",
+        )
     st.session_state["resultados_atividades"]["Especialistas"] = linhas_relatorio
 
 # ---------------------------------------------------------------------------
@@ -784,7 +1051,11 @@ with aba_analise:
             col1, col2, col3 = st.columns([3, 1, 2])
             col1.markdown(f"**{nome_ativ}**")
             col1.caption(f"Dimensionado: {dimensionado} {unidade}")
-            contratado = col2.number_input("Contratado", min_value=0, value=int(dimensionado), key=f"contr_{nome_ativ}")
+            # Nasce igual ao dimensionado e o acompanha até o usuário editar
+            # (antes ficava congelado no 1º valor -- ex.: 0 antes do inventário --
+            # e gerava "déficit de 100%" falso).
+            sincronizar_padrao(f"contr_{nome_ativ}", int(dimensionado))
+            contratado = col2.number_input("Contratado", min_value=0, key=f"contr_{nome_ativ}")
             delta = contratado - dimensionado
             pct_desvio = 100 * abs(delta) / dimensionado if dimensionado else 0
             desvio = f" ({100 * delta / dimensionado:+.0f}%)" if dimensionado else ""
@@ -828,6 +1099,9 @@ premissas = [
     ("Parâmetros estimados", "Parâmetros com fonte 'estimativa (a validar)' não têm lastro em dado de campo — não usar para "
                              "decisão de contrato sem validação técnica."),
 ]
+if ciclos_do_modelo("man") or ciclos_do_modelo("mec"):
+    premissas.append(("Ciclos de roçada", st.session_state["veg_aplicado"]["texto"] + ". Ciclos no período = dias do "
+                      "período ÷ ((altura máx. − pós-corte) ÷ crescimento em cm/dia), arredondado para cima."))
 
 with aba_export:
     st.subheader("Exportar relatório e memória de cálculo")
@@ -848,21 +1122,29 @@ with aba_export:
     else:
         st.error("Não há nada calculado ainda. Carregue o inventário e preencha as abas de dimensionamento primeiro.")
 
+    # O Streamlit executa o `data=` dos botões de download numa thread separada,
+    # SEM acesso ao st.session_state (st.session_state[...] dá KeyError e .get()
+    # devolve None em silêncio). Por isso os dados são capturados aqui, durante
+    # a execução normal do script, e as funções abaixo só usam essas variáveis.
+    resumo_rocada_exp = st.session_state["resumo_rocada"]
+    resultados_exp = st.session_state["resultados_atividades"]
+    analise_exp = st.session_state.get("analise_contrato")
+
     def _bytes_pptx():
         with tempfile.TemporaryDirectory() as tmp:
             caminho = str(Path(tmp) / "DimConservacao_Relatorio.pptx")
             export_pptx.gerar_relatorio(
                 caminho_saida=caminho, nome_contrato=nome_unidade,
-                resumo_rocada=st.session_state["resumo_rocada"],
-                resultados_atividades=st.session_state["resultados_atividades"],
-                analise_contrato=st.session_state.get("analise_contrato"),
+                resumo_rocada=resumo_rocada_exp,
+                resultados_atividades=resultados_exp,
+                analise_contrato=analise_exp,
             )
             return Path(caminho).read_bytes()
 
     def _bytes_excel():
         return export_excel.gerar_memoria_calculo({
             "unidade": nome_unidade, "data": f"{date.today():%d/%m/%Y}", "dias_uteis_mes": dim.DIAS_UTEIS_MES_PADRAO,
-            "atividades": memoria_atividades, "analise": st.session_state.get("analise_contrato"),
+            "atividades": memoria_atividades, "analise": analise_exp,
             "inventario": df_inv, "divisoes": memoria_divisoes, "auditoria": auditoria, "premissas": premissas,
         })
 
