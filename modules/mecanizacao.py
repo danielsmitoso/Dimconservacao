@@ -1,13 +1,15 @@
 """Roçada mecanizada: qual equipamento atende qual parte da área e quantas
 unidades de cada um a frota precisa ter.
 
-Diferente da versão anterior (que calculava "se ESSE equipamento sozinho
-fizesse tudo" e devolvia alternativas não somáveis), aqui a área mecanizada de
-cada trecho é DISTRIBUÍDA entre os equipamentos que a análise por satélite
-(Quasar) indica para cada polígono. Assim o número de unidades de cada
-equipamento é aditivo (frota mista real) e pode ser comparado com a frota
+A área mecanizada de cada trecho é atribuída ao equipamento que a análise por
+satélite (Quasar) indica para cada polígono. Quando o polígono indica mais de
+um, são ALTERNATIVAS (qualquer um faria a área inteira) e a área vai para quem
+aproveita melhor a frota (`alocar_alternativas`). Assim o número de unidades de
+cada equipamento é aditivo (frota mista real) e pode ser comparado com a frota
 disponível e levado à Análise de Contrato e ao relatório.
 """
+import math
+
 import pandas as pd
 
 from modules import inventario as inv
@@ -40,6 +42,71 @@ def areas_por_equipamento(df_inv: pd.DataFrame, equipamento_padrao: str | None =
     ordem = {n: i for i, n in enumerate(pp.ROCADA_MECANIZADA)}
     areas = areas[sorted(areas.columns, key=lambda n: ordem.get(n, 99))]
     return areas, indicado
+
+
+def alocar_alternativas(areas: pd.DataFrame, produtividades: dict, capacidade_por_unidade: dict):
+    """Decide quem executa as áreas com equipamentos ALTERNATIVOS
+    (colunas 'A ou B'), para aproveitar ao máximo cada unidade da frota.
+
+    As indicações do inventário são independentes: num polígono 'Trator 1.7m
+    ou Spider' o trator poderia fazer 100% e o spider também -- não é uma
+    divisão. Regra (decisão do usuário, 2026-10-16):
+      1. A área exclusiva de cada equipamento define as unidades mínimas
+         (arredondadas para cima); a fração não usada da última unidade é folga.
+      2. A área com alternativas entra primeiro na folga das unidades que já
+         vão existir (do equipamento de maior produtividade para o de menor).
+      3. O que sobrar vai para a alternativa de maior produtividade (menos
+         unidades novas); a folga criada já serve às áreas seguintes.
+
+    `capacidade_por_unidade`: m² que uma unidade faz por ciclo no cenário de
+    pico. Devolve (áreas só com equipamentos únicos, DataFrame explicando a
+    alocação de cada combinação).
+    """
+    simples = [c for c in areas.columns if pp.SEPARADOR_ALTERNATIVAS not in c]
+    combos = [c for c in areas.columns if pp.SEPARADOR_ALTERNATIVAS in c]
+    todos = list(dict.fromkeys(simples + [p for c in combos for p in c.split(pp.SEPARADOR_ALTERNATIVAS)]))
+    alocado = pd.DataFrame({n: areas[n] if n in areas.columns else 0.0 for n in todos}, index=areas.index).astype(float)
+    if not combos:
+        return alocado, pd.DataFrame()
+
+    carga = {n: float(alocado[n].sum()) for n in todos}
+
+    def folga(n):
+        cap = capacidade_por_unidade.get(n, 0)
+        if cap <= 0 or carga[n] <= 0:
+            return 0.0
+        return math.ceil(carga[n] / cap - 1e-9) * cap - carga[n]
+
+    explicacao = []
+    for combo in sorted(combos, key=lambda c: -areas[c].sum()):
+        opcoes = sorted(combo.split(pp.SEPARADOR_ALTERNATIVAS), key=lambda n: -produtividades.get(n, 0))
+        recebido = {n: 0.0 for n in opcoes}
+        for idx, area in areas[combo].items():
+            resto = float(area)
+            for n in opcoes:  # 2. folga das unidades existentes
+                if resto <= 0:
+                    break
+                usar = min(resto, folga(n))
+                if usar > 0:
+                    alocado.at[idx, n] += usar
+                    carga[n] += usar
+                    recebido[n] += usar
+                    resto -= usar
+            if resto > 0:  # 3. maior produtividade
+                n = opcoes[0]
+                alocado.at[idx, n] += resto
+                carga[n] += resto
+                recebido[n] += resto
+        total = float(areas[combo].sum())
+        explicacao.append({
+            "Equipamentos alternativos": combo,
+            "Área (m²)": round(total, 0),
+            "Executado por": " · ".join(f"{n} {v:,.0f} m²" for n, v in recebido.items() if v > 0.5),
+            "Critério": "folga de unidades já necessárias, depois o de maior produtividade",
+        })
+    alocado = alocado.loc[:, alocado.sum() > 0]
+    ordem = {n: i for i, n in enumerate(pp.ROCADA_MECANIZADA)}
+    return alocado[sorted(alocado.columns, key=lambda n: ordem.get(n, 99))], pd.DataFrame(explicacao)
 
 
 def recomendacao_por_trecho(df_inv: pd.DataFrame, areas: pd.DataFrame) -> pd.DataFrame:

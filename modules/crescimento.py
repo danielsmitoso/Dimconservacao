@@ -226,6 +226,27 @@ def taxa_mensal(clima: dict, composicao: dict, solo: str = SOLO_PADRAO, calibrac
     return taxas
 
 
+def memoria_taxa(clima: dict, composicao: dict, solo: str, calibracao: float, mes: int) -> dict:
+    """Passo a passo do crescimento (cm/dia) de um mês -- mesma conta de
+    taxa_mensal(), aberta para exibir na tela e no Excel."""
+    total = sum(v for v in composicao.values() if v > 0)
+    if total <= 0:
+        composicao, total = {ESPECIE_PADRAO: 100}, 100
+    temp = clima["temp_c"][mes]
+    especies = []
+    for esp, pct in composicao.items():
+        if pct <= 0:
+            continue
+        e = ESPECIES[esp]
+        graus = max(0.0, temp - e["tb"])
+        especies.append({"especie": esp, "peso": pct / total, "k": e["k"], "tb": e["tb"],
+                         "graus_dia": graus, "contribuicao": (pct / total) * e["k"] * graus})
+    termico = sum(x["contribuicao"] for x in especies)
+    agua = fator_agua_mensal(clima, solo)[mes]
+    return {"mes": mes, "temp": temp, "especies": especies, "termico": termico, "agua": agua,
+            "calibracao": calibracao, "taxa": termico * agua * calibracao}
+
+
 def meses_crescimento_alto(taxas: list[float]) -> list[int]:
     """Índices (0-11) dos meses com crescimento acima da média anual -- é o
     "período de chuva" do dimensionamento. No Sul, onde chove o ano todo, quem
@@ -269,13 +290,11 @@ def crescimento_acumulado(taxas: list[float], mes: int, dias: float) -> float:
     return total
 
 
-def fator_calibracao(observacoes: list[dict], clima: dict, composicao: dict, solo: str, h0: float) -> float | None:
-    """Ajusta o modelo ao campo. Cada observação: {"mes": 0-11, "dias": dias desde a
-    última roçada, "altura_cm": altura medida hoje}. Fator = média(crescimento medido ÷
-    crescimento do modelo nos mesmos dias) -- uma medição de novembro com 60 dias
-    cobre também setembro e outubro (item 44 do backlog)."""
+def memoria_calibracao(observacoes: list[dict], clima: dict, composicao: dict, solo: str, h0: float) -> list[dict]:
+    """Uma linha por medição válida: crescimento medido (altura − pós-corte),
+    crescimento que o modelo (sem calibração) prevê para os mesmos dias e a razão."""
     base = taxa_mensal(clima, composicao, solo, 1.0)
-    razoes = []
+    linhas = []
     for ob in observacoes:
         try:
             mes, dias, altura = int(ob["mes"]), float(ob["dias"]), float(ob["altura_cm"])
@@ -286,8 +305,18 @@ def fator_calibracao(observacoes: list[dict], clima: dict, composicao: dict, sol
         previsto = crescimento_acumulado(base, mes, dias)
         if previsto <= 0:
             continue
-        razoes.append((altura - h0) / previsto)
-    return sum(razoes) / len(razoes) if razoes else None
+        linhas.append({"mes": mes, "dias": dias, "altura": altura, "medido": altura - h0,
+                       "previsto": previsto, "razao": (altura - h0) / previsto})
+    return linhas
+
+
+def fator_calibracao(observacoes: list[dict], clima: dict, composicao: dict, solo: str, h0: float) -> float | None:
+    """Ajusta o modelo ao campo. Cada observação: {"mes": 0-11, "dias": dias desde a
+    última roçada, "altura_cm": altura medida hoje}. Fator = média(crescimento medido ÷
+    crescimento do modelo nos mesmos dias) -- uma medição de novembro com 60 dias
+    cobre também setembro e outubro (item 44 do backlog)."""
+    linhas = memoria_calibracao(observacoes, clima, composicao, solo, h0)
+    return sum(x["razao"] for x in linhas) / len(linhas) if linhas else None
 
 
 def buscar_clima_coordenada(lat: float, lon: float, timeout: int = 30) -> dict:

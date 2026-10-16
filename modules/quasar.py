@@ -34,7 +34,7 @@ from modules import parametros_padrao as pp
 
 # Sobe a cada mudança no formato dos DataFrames gerados aqui: entra na chave do
 # cache do app, evitando reaproveitar resultado calculado por uma versão antiga.
-VERSAO = "2026-09-21b"
+VERSAO = "2026-10-16"
 
 COLUNAS_ESPERADAS = ["id", "km_inicial", "km_final", "area_m2", "pct_mecanizacao"]
 
@@ -175,17 +175,18 @@ def _tokens_equipamento(texto: str) -> list[str]:
 
 
 def _area_por_equipamento(df: pd.DataFrame) -> pd.DataFrame:
-    """Distribui a área mecanizada de cada polígono entre os equipamentos
-    indicados na coluna 'Equipamento' (divisão igual quando há mais de um,
-    ex: 'Trator 1.7m, Spider'). Devolve uma coluna por equipamento (nome
-    canônico), alinhada ao índice de `df`. Polígono mecanizado sem
-    equipamento indicado cai em 'Sem equipamento indicado'."""
+    """Área mecanizada de cada polígono por equipamento indicado na coluna
+    'Equipamento'. Quando há mais de um (ex: 'Trator 1.7m, Spider'), eles são
+    ALTERNATIVAS -- qualquer um poderia fazer a área toda --, então a área NÃO
+    é dividida: vai inteira para uma coluna combinada ('Trator 1.7m ou Spider')
+    e quem executa é decidido na alocação da frota (mecanizacao). Devolve uma
+    coluna por equipamento/combinação, alinhada ao índice de `df`. Polígono
+    mecanizado sem equipamento indicado cai em 'Sem equipamento indicado'."""
     partes: dict[str, dict] = {}
     for idx, linha in df[df["area_mecanizada_m2"] > 0].iterrows():
-        area_mec = linha["area_mecanizada_m2"]
         tokens = _tokens_equipamento(linha["equipamento"]) or ["Sem equipamento indicado"]
-        for t in tokens:
-            partes.setdefault(t, {})[idx] = partes.get(t, {}).get(idx, 0.0) + area_mec / len(tokens)
+        nome = pp.nome_alternativas(tokens)
+        partes.setdefault(nome, {})[idx] = partes.get(nome, {}).get(idx, 0.0) + linha["area_mecanizada_m2"]
     return pd.DataFrame({t: pd.Series(v) for t, v in partes.items()}, index=df.index).fillna(0.0)
 
 
@@ -283,12 +284,13 @@ def equipamentos_do_inventario(df_inventario: pd.DataFrame) -> dict:
     coluna}. O nome vem do catálogo (pp.ROCADA_MECANIZADA) ou, se o
     equipamento não está no catálogo, do texto da coluna."""
     achados = {}
-    nomes_catalogo = {pp.coluna_area_equipamento(n): n for n in pp.ROCADA_MECANIZADA}
+    nomes_catalogo = {pp.coluna_area_equipamento(n)[len("mec_m2__"):]: n for n in pp.ROCADA_MECANIZADA}
+    nomes_catalogo["sem_equipamento_indicado"] = "Sem equipamento indicado"
     for c in df_inventario.columns:
         if str(c).startswith("mec_m2__"):
-            nome = nomes_catalogo.get(c) or (
-                "Sem equipamento indicado" if c == "mec_m2__sem_equipamento_indicado"
-                else str(c)[len("mec_m2__"):].replace("_", " ").title()
+            partes = str(c)[len("mec_m2__"):].split("__ou__")
+            nome = pp.SEPARADOR_ALTERNATIVAS.join(
+                nomes_catalogo.get(p) or p.replace("_", " ").title() for p in partes
             )
             achados[nome] = c
     return achados

@@ -81,13 +81,33 @@ def canonizar_equipamento(texto: str) -> str:
     return bruto[:1].upper() + bruto[1:] if bruto else bruto
 
 
+# Poligono/trecho em que mais de um equipamento pode trabalhar (ex: Quasar
+# "Trator 1.7m, Spider"): o nome combinado usa este separador. As indicacoes
+# sao ALTERNATIVAS independentes (cada um poderia fazer a area), nao uma divisao
+# da area entre eles -- quem faz e decidido na alocacao da frota
+# (mecanizacao.alocar_alternativas). Decisao do usuario, 2026-10-16.
+SEPARADOR_ALTERNATIVAS = " ou "
+
+
 def coluna_area_equipamento(nome: str) -> str:
     """Nome da coluna do inventario que guarda a area mecanizada (m2) atendida
-    por um equipamento, ex: 'Trator 1.7m' -> 'mec_m2__trator_1_7m'."""
+    por um equipamento, ex: 'Trator 1.7m' -> 'mec_m2__trator_1_7m'. Para
+    alternativas ('Trator 1.7m ou Spider') -> 'mec_m2__trator_1_7m__ou__spider'."""
     import re
     import unicodedata
-    base = unicodedata.normalize("NFKD", nome).encode("ascii", "ignore").decode("ascii").lower()
-    return "mec_m2__" + re.sub(r"[^a-z0-9]+", "_", base).strip("_")
+
+    def _slug(texto):
+        base = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode("ascii").lower()
+        return re.sub(r"[^a-z0-9]+", "_", base).strip("_")
+    return "mec_m2__" + "__ou__".join(_slug(p) for p in nome.split(SEPARADOR_ALTERNATIVAS))
+
+
+def nome_alternativas(nomes) -> str:
+    """Junta equipamentos alternativos num nome unico, sem repeticao e na ordem
+    do catalogo (ex: ['Spider', 'Trator 1.7m'] -> 'Trator 1.7m ou Spider')."""
+    ordem = {n: i for i, n in enumerate(ROCADA_MECANIZADA)}
+    unicos = sorted(dict.fromkeys(nomes), key=lambda n: (ordem.get(n, 99), n))
+    return SEPARADOR_ALTERNATIVAS.join(unicos)
 
 
 # --- Ciclos/ano sazonais (dimensionamento chuva x seca) ------------------
@@ -98,19 +118,27 @@ CICLOS_PADRAO = {
 
 # --- Atividades "Full Service" (RioSP FS 4.0) -----------------------------
 # unidade "km": extensao do trecho. meta = km atendidos por dia por equipe.
+# Janela de execucao das atividades em "ciclos por ano" -> meses padrao.
+JANELAS_EXECUCAO = {"Seca": 5, "Chuva": 7, "Ano todo": 12}
+
 FULL_SERVICE_ATIVIDADES = {
+    # Aceiro e Drenagem fora: "ciclos por ano" (modo anual), nao chuva/seca --
+    # contratos Artesp: 1 ciclo/ano, executado na seca (reuniao Daniel x Omar,
+    # 2026-10-16). Cenario 2 = comparativo (ex.: 2 ciclos/ano).
     "Aceiro (com remocao de massa verde)": {
-        "unidade": "km", "meta_dia": 2, "ciclos_chuva": 4, "meses_chuva": 7,
-        "ciclos_seca": 2, "meses_seca": 5, "fonte": "estimativa (a validar)",
+        "unidade": "km", "meta_dia": 2, "modo": "anual", "ciclos_ano": 1, "ciclos_ano_alt": 2,
+        "janela": "Seca", "meses_janela": 5,
+        "fonte": "ciclos: contratos Artesp (1 ciclo/ano, na seca); meta/dia: estimativa (a validar)",
     },
     "Drenagem de plataforma": {
         "unidade": "km", "meta_dia": 5, "ciclos_chuva": 4, "meses_chuva": 7,
         "ciclos_seca": 4, "meses_seca": 5, "fonte": "estimativa (a validar)",
     },
     "Drenagem fora de plataforma": {
-        "unidade": "km", "meta_dia": 2, "ciclos_chuva": 4, "meses_chuva": 7,
-        "ciclos_seca": 4, "meses_seca": 5,
-        "fonte": "referencia (RioSP FS4.0: 1/4 do segmento por ciclo, 4 ciclos/ano)",
+        "unidade": "km", "meta_dia": 2, "modo": "anual", "ciclos_ano": 1, "ciclos_ano_alt": 2,
+        "janela": "Seca", "meses_janela": 5,
+        "fonte": "ciclos: contratos Artesp (1 ciclo/ano, na seca) -- equivale ao RioSP FS4.0 "
+                 "(1/4 do segmento por ciclo x 4 ciclos = 1 passada completa/ano); meta/dia: estimativa (a validar)",
     },
     "Capina": {
         "unidade": "km", "meta_dia": 5, "ciclos_chuva": 6, "meses_chuva": 7,

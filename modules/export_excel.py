@@ -28,6 +28,11 @@ _BORDA = Border(*(Side(style="thin", color="D9D0F5") for _ in range(4)))
 FMT_INT = "#,##0"
 FMT_DEC = "#,##0.00"
 
+SUBTITULOS_ABAS = {
+    "Memória crescimento": "Passo a passo do modelo de crescimento: cm/dia, dias até a altura máxima e ciclos por período.",
+    "Alocação alternativas": "Polígonos com mais de um equipamento indicado (alternativas, não divisão): quem executa e por quê.",
+}
+
 
 def _titulo(ws, texto, subtitulo=None):
     ws.sheet_view.showGridLines = False
@@ -234,7 +239,8 @@ def gerar_memoria_calculo(dados: dict) -> bytes:
         if df is None or len(df) == 0:
             continue
         ws = wb.create_sheet(nome_aba[:31])
-        _titulo(ws, nome_aba, "Proposta de divisão por trecho (ocupação = quanto da capacidade de um ciclo é usada).")
+        _titulo(ws, nome_aba, SUBTITULOS_ABAS.get(
+            nome_aba, "Proposta de divisão por trecho (ocupação = quanto da capacidade de um ciclo é usada)."))
         _escrever_df(ws, df, 4)
         ws.freeze_panes = "A5"
         _auto_largura(ws, maximo=60)

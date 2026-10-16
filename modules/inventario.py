@@ -234,8 +234,9 @@ def preparar_inventario(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = df[c].fillna("").astype(str).str.strip()
 
     if "equipamento_predominante" in df.columns and not colunas_mec:
+        # "Trator 1.7m, Spider" = alternativas (qualquer um faz a área), não divisão.
         df["equipamento_predominante"] = df["equipamento_predominante"].apply(
-            lambda t: pp.canonizar_equipamento(t) if str(t).strip() else ""
+            lambda t: pp.nome_alternativas([pp.canonizar_equipamento(p) for p in str(t).split(",") if p.strip()])
         )
         area_mec = area_por_modalidade(df, "mecanizada")
         for nome in sorted({n for n in df["equipamento_predominante"] if n}):
