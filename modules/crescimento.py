@@ -10,9 +10,12 @@ Taxa de crescimento (gramíneas tropicais C4, por graus-dia):
 
     taxa = soma_espécies( cobertura x k x max(0, Tmédia - Tb) ) x f_água x fator_calibração
 
+f_água vem do balanço hídrico mensal (Thornthwaite-Mather), desde 2026-10-15.
+
 Ver retroanalises/proposta_modelo_crescimento.md (fontes e premissas).
 """
 import json
+import math
 import urllib.request
 
 DIAS_MES = [31, 28.25, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
@@ -53,17 +56,19 @@ ESPECIES = {
 }
 ESPECIE_PADRAO = "Vegetação mista / não identificada"
 
-# Piso do fator água no mês mais seco: solo argiloso retém mais água e mantém
-# algum crescimento na seca; arenoso seca rápido. Estimativa (a validar).
-SOLOS = {"Arenoso": 0.15, "Médio": 0.25, "Argiloso": 0.35}
+# Água que o solo consegue guardar para a planta (CAD, mm) no balanço hídrico:
+# argiloso guarda mais e segura o crescimento no começo da seca; arenoso seca
+# rápido. Estimativa (a validar) -- faixa usual de CAD para gramíneas.
+SOLOS = {"Arenoso": 40, "Médio": 70, "Argiloso": 100}
 SOLO_PADRAO = "Médio"
-CHUVA_SEM_LIMITACAO_MM = 100  # acima disso no mês, a água não limita o crescimento
 
 FONTE_CLIMA = ("NASA POWER, climatologia 2001-2025 (temperatura a 2 m e chuva corrigida), "
-               "ponto da capital do estado -- consulta feita em 2026-10-14")
+               "ponto da capital do estado (SP: Campinas) -- consulta feita em 2026-10-14/15")
 
-# Clima mensal de referência por UF (ponto da capital). Para trechos longe da
-# capital, use a opção de coordenada (consulta a NASA POWER na hora).
+# Clima mensal de referência por UF (ponto da capital; em SP, Campinas, porque a
+# capital, a 760 m, é o ponto mais frio do estado e os contratos ficam no
+# interior -- decisão do usuário, 2026-10-15). Para trechos longe do ponto de
+# referência, use a opção de coordenada (consulta a NASA POWER na hora).
 CLIMA_UF = {
     "AC": {"nome": "Acre", "referencia": "Rio Branco", "lat": -9.97, "lon": -67.81,
            "temp_c": [25.3, 25.1, 25.1, 24.9, 24.3, 24.1, 24.5, 26.3, 27.8, 27.8, 26.6, 25.5],
@@ -140,18 +145,69 @@ CLIMA_UF = {
     "SE": {"nome": "Sergipe", "referencia": "Aracaju", "lat": -10.91, "lon": -37.07,
            "temp_c": [27.1, 27.4, 27.6, 27.5, 26.7, 25.8, 24.9, 24.7, 25.1, 25.9, 26.5, 26.9],
            "chuva_mm": [56, 58, 74, 116, 191, 158, 144, 89, 58, 47, 27, 24]},
-    "SP": {"nome": "São Paulo", "referencia": "São Paulo", "lat": -23.55, "lon": -46.63,
-           "temp_c": [22.3, 22.4, 21.6, 20.0, 17.1, 16.3, 15.9, 17.2, 19.1, 20.7, 20.9, 22.1],
-           "chuva_mm": [230, 175, 145, 84, 67, 58, 61, 36, 68, 104, 148, 177]},
+    "SP": {"nome": "São Paulo", "referencia": "Campinas", "lat": -22.91, "lon": -47.06,
+           "temp_c": [22.8, 22.9, 22.1, 20.6, 17.8, 17.0, 16.8, 18.4, 20.7, 22.2, 22.1, 22.8],
+           "chuva_mm": [243, 169, 134, 74, 62, 46, 47, 30, 59, 105, 157, 186]},
     "TO": {"nome": "Tocantins", "referencia": "Palmas", "lat": -10.18, "lon": -48.33,
            "temp_c": [25.7, 25.4, 25.6, 25.6, 25.4, 24.7, 25.3, 27.3, 29.4, 29.1, 27.2, 26.3],
            "chuva_mm": [268, 225, 248, 158, 55, 7, 1, 3, 38, 109, 185, 214]},
 }
 
 
-def fator_agua(chuva_mm: float, solo: str = SOLO_PADRAO) -> float:
-    piso = SOLOS.get(solo, SOLOS[SOLO_PADRAO])
-    return max(piso, min(1.0, chuva_mm / CHUVA_SEM_LIMITACAO_MM))
+_DIA_DO_ANO_MEIO_MES = [15, 46, 74, 105, 135, 166, 196, 227, 258, 288, 319, 349]
+
+
+def evapotranspiracao_potencial(temps: list[float], lat: float) -> list[float]:
+    """ETP mensal (mm) por Thornthwaite (1948), corrigida pela duração do dia e
+    do mês; acima de 26,5 °C usa a equação de Willmott/Camargo. Só precisa de
+    temperatura e latitude -- funciona offline."""
+    indice = sum((t / 5) ** 1.514 for t in temps if t > 0)
+    if indice <= 0:
+        return [0.0] * 12
+    a = 6.75e-7 * indice ** 3 - 7.71e-5 * indice ** 2 + 1.792e-2 * indice + 0.49239
+    etp = []
+    for i, t in enumerate(temps):
+        if t <= 0:
+            padrao = 0.0
+        elif t < 26.5:
+            padrao = 16 * (10 * t / indice) ** a
+        else:
+            padrao = -415.85 + 32.24 * t - 0.43 * t * t
+        declinacao = math.radians(23.45 * math.sin(math.radians(360 * (284 + _DIA_DO_ANO_MEIO_MES[i]) / 365)))
+        x = -math.tan(math.radians(lat)) * math.tan(declinacao)
+        horas_luz = 24 / math.pi * math.acos(max(-1.0, min(1.0, x)))
+        etp.append(padrao * (horas_luz / 12) * (DIAS_MES[i] / 30))
+    return etp
+
+
+def fator_agua_mensal(clima: dict, solo: str = SOLO_PADRAO) -> list[float]:
+    """Fração do crescimento que a água permite em cada mês (0-1), pelo balanço
+    hídrico climatológico de Thornthwaite-Mather (1955): ETR ÷ ETP.
+
+    O solo funciona como uma caixa d'água (CAD, mm): chuva acima da demanda enche
+    a caixa; na seca a planta vai gastando o que sobrou. Por isso o 1º mês de chuva
+    depois de uma seca longa ainda é limitado (a caixa está vazia) e o 1º mês seco
+    ainda cresce (a caixa está cheia) -- o fator antigo (chuva ÷ 100 mm, com piso)
+    não tinha essa memória e fazia, p. ex., outubro de Goiânia virar o mês de maior
+    crescimento do ano (auditoria de 2026-10-15)."""
+    cad = SOLOS.get(solo, SOLOS[SOLO_PADRAO])
+    chuva = clima["chuva_mm"]
+    etp = evapotranspiracao_potencial(clima["temp_c"], clima.get("lat", -15.0))
+    armazenado, fatores = float(cad), [1.0] * 12
+    for _ in range(4):  # repete o ano até o armazenamento estabilizar (regime permanente)
+        for i in range(12):
+            if etp[i] <= 0:
+                fatores[i] = 1.0
+                continue
+            if chuva[i] >= etp[i]:
+                armazenado = min(cad, armazenado + chuva[i] - etp[i])
+                etr = etp[i]
+            else:
+                novo = armazenado * math.exp(-(etp[i] - chuva[i]) / cad)
+                etr = chuva[i] + (armazenado - novo)
+                armazenado = novo
+            fatores[i] = min(1.0, etr / etp[i])
+    return fatores
 
 
 def taxa_mensal(clima: dict, composicao: dict, solo: str = SOLO_PADRAO, calibracao: float = 1.0) -> list[float]:
@@ -161,12 +217,12 @@ def taxa_mensal(clima: dict, composicao: dict, solo: str = SOLO_PADRAO, calibrac
     if total <= 0:
         composicao, total = {ESPECIE_PADRAO: 100}, 100
     taxas = []
-    for temp, chuva in zip(clima["temp_c"], clima["chuva_mm"]):
+    for temp, agua in zip(clima["temp_c"], fator_agua_mensal(clima, solo)):
         termico = sum(
             (pct / total) * ESPECIES[esp]["k"] * max(0.0, temp - ESPECIES[esp]["tb"])
             for esp, pct in composicao.items() if pct > 0
         )
-        taxas.append(termico * fator_agua(chuva, solo) * calibracao)
+        taxas.append(termico * agua * calibracao)
     return taxas
 
 
@@ -200,10 +256,24 @@ def ciclos_periodo(taxas: list[float], meses: list[int], h_max: float, h0: float
     return {"ciclos": dias / intervalo, "intervalo_dias": intervalo, "taxa": taxa, "dias": dias}
 
 
+def crescimento_acumulado(taxas: list[float], mes: int, dias: float) -> float:
+    """Crescimento (cm) previsto nos `dias` anteriores a uma medição feita no meio do
+    mês `mes`, somando dia a dia a taxa de cada mês percorrido para trás."""
+    total, m, resto = 0.0, mes, DIAS_MES[mes] / 2
+    while dias > 0:
+        passo = min(dias, resto)
+        total += taxas[m] * passo
+        dias -= passo
+        m = (m - 1) % 12
+        resto = DIAS_MES[m]
+    return total
+
+
 def fator_calibracao(observacoes: list[dict], clima: dict, composicao: dict, solo: str, h0: float) -> float | None:
     """Ajusta o modelo ao campo. Cada observação: {"mes": 0-11, "dias": dias desde a
-    última roçada, "altura_cm": altura medida hoje}. Fator = média(taxa medida ÷
-    taxa do modelo no mês)."""
+    última roçada, "altura_cm": altura medida hoje}. Fator = média(crescimento medido ÷
+    crescimento do modelo nos mesmos dias) -- uma medição de novembro com 60 dias
+    cobre também setembro e outubro (item 44 do backlog)."""
     base = taxa_mensal(clima, composicao, solo, 1.0)
     razoes = []
     for ob in observacoes:
@@ -211,9 +281,12 @@ def fator_calibracao(observacoes: list[dict], clima: dict, composicao: dict, sol
             mes, dias, altura = int(ob["mes"]), float(ob["dias"]), float(ob["altura_cm"])
         except (KeyError, TypeError, ValueError):
             continue
-        if dias <= 0 or altura <= h0 or base[mes] <= 0:
+        if dias <= 0 or altura <= h0:
             continue
-        razoes.append(((altura - h0) / dias) / base[mes])
+        previsto = crescimento_acumulado(base, mes, dias)
+        if previsto <= 0:
+            continue
+        razoes.append((altura - h0) / previsto)
     return sum(razoes) / len(razoes) if razoes else None
 
 
