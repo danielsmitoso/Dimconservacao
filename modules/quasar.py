@@ -34,7 +34,7 @@ from modules import parametros_padrao as pp
 
 # Sobe a cada mudança no formato dos DataFrames gerados aqui: entra na chave do
 # cache do app, evitando reaproveitar resultado calculado por uma versão antiga.
-VERSAO = "2026-10-16"
+VERSAO = "2026-10-16b"
 
 COLUNAS_ESPERADAS = ["id", "km_inicial", "km_final", "area_m2", "pct_mecanizacao"]
 
@@ -100,6 +100,10 @@ def _mapear_colunas(colunas) -> dict:
             mapa["canteiro"] = original
         elif norm == "sentido":
             mapa["sentido"] = original
+        elif norm == "bloqueio fisico":
+            mapa["bloqueio"] = original
+        elif norm == "observacao":
+            mapa["observacao"] = original
     return mapa
 
 
@@ -145,6 +149,15 @@ def carregar_quasar(caminho_ou_arquivo) -> pd.DataFrame:
     df["sentido"] = df_bruto[mapa["sentido"]].fillna("").astype(str) if "sentido" in mapa else ""
     df["largura_m"] = pd.to_numeric(df_bruto[mapa["largura_m"]], errors="coerce") if "largura_m" in mapa else np.nan
     df["inclinacao"] = pd.to_numeric(df_bruto[mapa["inclinacao"]], errors="coerce") if "inclinacao" in mapa else np.nan
+    # 'Largura média' do Quasar = Área ÷ comprimento do polígono (conferido nos 679
+    # polígonos de canteiro central do AB). Onde não vem (canteiro lateral do AB,
+    # export Sorocabana), é calculada do mesmo jeito.
+    comprimento_m = (df["km_final"] - df["km_inicial"]).abs() * 1000
+    calculada = (df["area_m2"] / comprimento_m).where(comprimento_m > 0)
+    df["largura_estimada"] = df["largura_m"].isna() & calculada.notna()
+    df["largura_m"] = df["largura_m"].fillna(calculada)
+    df["bloqueio"] = (df_bruto[mapa["bloqueio"]].fillna("").astype(str).map(_normalizar) == "sim") if "bloqueio" in mapa else False
+    df["observacao"] = df_bruto[mapa["observacao"]].fillna("").astype(str) if "observacao" in mapa else ""
 
     df = df.dropna(subset=["rodovia"])
     df = df[~df["rodovia"].str.lower().isin(["none", "nan", ""])]
@@ -190,6 +203,33 @@ def _area_por_equipamento(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame({t: pd.Series(v) for t, v in partes.items()}, index=df.index).fillna(0.0)
 
 
+# A regra só alcança polígonos indicados para Trator 1.7m: Eixo-zero, braço
+# articulado e Spider são indicados justamente por restrição de acesso
+# (obstáculos, curvas, inclinação, alcance), onde o 4.7m não entra.
+_INDICACOES_SEM_RESTRICAO_DE_ACESSO = {"Trator 1.7m"}
+_OBS_BLOQUEIO = re.compile(r"drenag|eps|barreira|defensa|new jersey", re.IGNORECASE)
+
+
+def aplicar_regra_trator_47(df: pd.DataFrame, largura_min_m: float) -> tuple[pd.DataFrame, pd.Series]:
+    """Regra do usuário (pergunta 32, 2026-10-16): canteiro com largura acima de
+    `largura_min_m` e SEM bloqueio (Bloqueio Físico = Sim, ou observação citando
+    drenagem/EPS/barreira/defensa) também pode ser feito pelo Trator 4.7m
+    ("tripla"). O 4.7m entra como ALTERNATIVA ao Trator 1.7m indicado -- não tira
+    ninguém. Só vale para polígono mecanizado indicado para Trator 1.7m (ver
+    _INDICACOES_SEM_RESTRICAO_DE_ACESSO).
+    Devolve (df com 'equipamento' ajustado, máscara dos polígonos alterados)."""
+    df = df.copy()
+    tokens = df["equipamento"].map(_tokens_equipamento)
+    obs_bloq = df["observacao"].map(lambda t: bool(_OBS_BLOQUEIO.search(str(t)))) if "observacao" in df else False
+    bloqueado = df["bloqueio"].astype(bool) if "bloqueio" in df else False
+    mascara = (
+        (df["area_mecanizada_m2"] > 0) & (df["largura_m"] > largura_min_m) & ~bloqueado & ~obs_bloq
+        & tokens.map(lambda t: bool(t) and set(t) <= _INDICACOES_SEM_RESTRICAO_DE_ACESSO)
+    )
+    df.loc[mascara, "equipamento"] = tokens[mascara].map(lambda t: ", ".join(t + ["Trator 4.7m"]))
+    return df, mascara
+
+
 def fator_cobertura_por_rodovia(df: pd.DataFrame) -> dict:
     """cobertura = (comprimento do polígono) / (passo entre posições), limitada
     a 100%. AB: 0,5 / 1,0 = 50%. Sorocabana: 0,5 / 0,5 = 100%."""
@@ -201,7 +241,8 @@ def fator_cobertura_por_rodovia(df: pd.DataFrame) -> dict:
 
 
 def agregar_por_trecho(
-    df_quasar: pd.DataFrame, tamanho_km: float = 5.0, extrapolar_cobertura: bool = False
+    df_quasar: pd.DataFrame, tamanho_km: float = 5.0, extrapolar_cobertura: bool = False,
+    largura_min_tripla: float | None = None,
 ) -> pd.DataFrame:
     """Agrupa os polígonos Quasar por rodovia + faixa de km (tamanho_km cada),
     devolvendo linhas de inventário: trecho, rodovia, km_inicial, km_final,
@@ -216,8 +257,12 @@ def agregar_por_trecho(
     extrapolar_cobertura: quando o mapeamento só cobre parte de cada km (ex: AB,
     50%), multiplica as áreas por 1/cobertura para estimar a rodovia inteira.
     Desligado por padrão -- é uma premissa que o usuário precisa validar.
+
+    largura_min_tripla: se informado, aplica aplicar_regra_trator_47() antes.
     """
     df = df_quasar.copy()
+    if largura_min_tripla is not None:
+        df, _ = aplicar_regra_trator_47(df, largura_min_tripla)
     tamanho_segmento = _tamanho_segmento_padrao(df)
     cobertura = fator_cobertura_por_rodovia(df)
 

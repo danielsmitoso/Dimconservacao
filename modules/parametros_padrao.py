@@ -85,8 +85,25 @@ def canonizar_equipamento(texto: str) -> str:
 # "Trator 1.7m, Spider"): o nome combinado usa este separador. As indicacoes
 # sao ALTERNATIVAS independentes (cada um poderia fazer a area), nao uma divisao
 # da area entre eles -- quem faz e decidido na alocacao da frota
-# (mecanizacao.alocar_alternativas). Decisao do usuario, 2026-10-16.
+# (mecanizacao.alocar_frota). Decisao do usuario, 2026-10-16.
 SEPARADOR_ALTERNATIVAS = " ou "
+
+
+# Quem pode fazer area indicada para outro equipamento (executor -> indicados
+# que ele atende). Regra do usuario (2026-10-16): a restricao e sempre de
+# TAMANHO e ACESSO -- o menor entra onde o maior entra (Trator 1.7m faz area de
+# Trator 4.7m; Eixo-zero, menor que o 1.7m, faz as duas), e o braco articulado
+# faz area de Spider se alcancar. Editavel na aba Rocada Mecanizada.
+SUBSTITUICOES_PADRAO = {
+    "Trator 1.7m": ["Trator 4.7m"],
+    "Eixo-zero": ["Trator 1.7m", "Trator 4.7m"],
+    "Trator com braço articulado": ["Spider"],
+}
+
+# Regra de reclassificacao do Quasar (pergunta 32, 2026-10-16): canteiro com
+# largura acima deste valor e sem bloqueio fisico (drenagem, EPS/defensa)
+# tambem pode ser feito pelo Trator 4.7m ("tripla").
+LARGURA_MINIMA_TRATOR_47_M = 5.0
 
 
 def coluna_area_equipamento(nome: str) -> str:

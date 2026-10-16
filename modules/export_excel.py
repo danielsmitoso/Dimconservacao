@@ -31,6 +31,7 @@ FMT_DEC = "#,##0.00"
 SUBTITULOS_ABAS = {
     "Memória crescimento": "Passo a passo do modelo de crescimento: cm/dia, dias até a altura máxima e ciclos por período.",
     "Alocação alternativas": "Polígonos com mais de um equipamento indicado (alternativas, não divisão): quem executa e por quê.",
+    "Remanejamentos": "Área passada para a folga de outro equipamento apto (alternativa ou substituição) para eliminar unidades parciais.",
 }
 
 
