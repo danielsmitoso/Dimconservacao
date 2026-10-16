@@ -78,6 +78,12 @@ Para fechar: volte no PowerShell e aperte `Ctrl+C`.
    - **Auditoria do Quasar** (aparece depois de gerar o inventário): extensão física por
      rodovia, cobertura do mapeamento, lacunas, km com canteiro central, alertas. Confira
      antes de usar os números.
+   - **Regra do Trator 4,70** (ligada por padrão na importação do Quasar): polígono indicado
+     para Trator 1.7m, com canteiro mais largo que 5 m (ajustável) e sem bloqueio físico
+     (coluna "Bloqueio Físico" = Sim, ou observação citando drenagem, EPS, barreira ou
+     defensa), passa a aceitar também o Trator 4.7m. A largura é a "Largura média" do Quasar
+     ou, onde não vem, área ÷ comprimento do polígono (é a mesma conta). Eixo-zero, braço
+     articulado e Spider não mudam: foram indicados por restrição de acesso.
 2. **Aba Vegetação e Clima** (opcional, recomendada): estima os **ciclos de roçada pelo
    crescimento da vegetação**. Informe a altura máxima do contrato (30 cm, 50 cm ou outra),
    a altura pós-corte (3–5 cm), o solo, o estado (clima de referência já embutido para os
@@ -104,7 +110,11 @@ Para fechar: volte no PowerShell e aperte `Ctrl+C`.
    polígono indica mais de um ("Trator 1.7m, Spider"), são **alternativas** — qualquer um faria
    a área inteira, ela não é dividida: preenche primeiro a folga das unidades que já são
    necessárias e o resto vai para o de maior produtividade (quadro "🔀 Áreas em que mais de
-   um equipamento pode trabalhar"). Mostra a frota necessária por equipamento (somável), o equipamento
+   um equipamento pode trabalhar"). A **tabela de substituição** (🔁) diz quem pode fazer área
+   indicada para outro, por tamanho e acesso: o Trator 1.7m faz área do 4.7m, o Eixo-zero faz
+   as duas, o braço articulado faz a do Spider (editável). O app usa isso só para ocupar a
+   folga de unidades que já existem e eliminar unidades parciais (quadro "♻️ Remanejamentos").
+   Mostra a frota necessária por equipamento (somável), o equipamento
    recomendado por trecho (com o mix e a justificativa técnica) e a divisão de trechos
    por unidade de cada equipamento. Informe a frota disponível para ver sobra/falta.
 5. **Aba Full Service**: aceiro, drenagem, capina, refilamento, calçada, placas, remoção de lixo.
@@ -238,6 +248,8 @@ com o inventário; o "Contratado" acompanha o dimensionado; uma edição manual
 não é apagada; e o modelo de crescimento funciona para os 27 estados e preenche
 as abas de roçada; que a calibração por medição de campo considera todos os dias
 desde a roçada; que a memória de cálculo do crescimento bate com o resultado; e que
-equipamentos alternativos não dividem a área; e que Aceiro/Drenagem fora usam ciclos por
-ano. Leva cerca de 1 minuto e termina com `10/10 testes passaram`.
+equipamentos alternativos não dividem a área; que a tabela de substituição elimina
+unidades parciais sem criar unidade nova; que a regra do Trator 4,70 respeita largura e
+bloqueio; e que Aceiro/Drenagem fora usam ciclos por ano. Leva cerca de 1 minuto e termina
+com `12/12 testes passaram`.
 Não exige instalar nada além do que já está no `requirements.txt`.

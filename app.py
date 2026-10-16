@@ -94,8 +94,9 @@ def ler_quasar(conteudo: bytes, versao: str = quasar.VERSAO) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False)
-def agregar_quasar(df_poligonos: pd.DataFrame, tamanho_km: float, extrapolar: bool, versao: str = quasar.VERSAO) -> pd.DataFrame:
-    return quasar.agregar_por_trecho(df_poligonos, tamanho_km, extrapolar)
+def agregar_quasar(df_poligonos: pd.DataFrame, tamanho_km: float, extrapolar: bool, largura_tripla: float | None,
+                   versao: str = quasar.VERSAO) -> pd.DataFrame:
+    return quasar.agregar_por_trecho(df_poligonos, tamanho_km, extrapolar, largura_tripla)
 
 
 @st.cache_data(show_spinner=False)
@@ -346,6 +347,19 @@ with aba_inv:
         )
         arquivo_quasar = st.file_uploader("Enviar export Quasar (.xlsx)", type=["xlsx"], key="quasar_upload")
         tamanho_km = st.number_input("Agrupar em trechos de quantos km", min_value=0.5, value=5.0, step=0.5)
+        rt1, rt2 = st.columns([3, 2])
+        usar_regra_tripla = rt1.checkbox(
+            "Regra do Trator 4,70: canteiro largo sem bloqueio também pode ser feito pelo 4,70", value=True,
+            key="regra_tripla",
+            help="Para polígonos indicados como Trator 1.7m, com largura acima do limite e sem bloqueio físico "
+                 "(coluna 'Bloqueio Físico' = Sim, ou observação citando drenagem, EPS, barreira ou defensa), o "
+                 "Trator 4.7m entra como alternativa. Polígonos de Eixo-zero, braço articulado e Spider não mudam: "
+                 "eles foram indicados por restrição de acesso. Largura = 'Largura média' do Quasar ou, onde não "
+                 "vem, área ÷ comprimento do polígono (é a mesma conta).",
+        )
+        largura_tripla = rt2.number_input("Largura mínima do canteiro (m)", min_value=1.0,
+                                          value=pp.LARGURA_MINIMA_TRATOR_47_M, step=0.5, key="largura_tripla",
+                                          disabled=not usar_regra_tripla)
         if arquivo_quasar is not None:
             try:
                 poligonos_previa = ler_quasar(arquivo_quasar.getvalue(), quasar.VERSAO)
@@ -389,13 +403,22 @@ with aba_inv:
                 st.success(f"Inventário carregado da planilha: {len(df_inv)} trechos.")
         elif origem == "quasar" and arquivo_quasar is not None:
             poligonos = ler_quasar(arquivo_quasar.getvalue(), quasar.VERSAO)
-            df_inv = inv.preparar_inventario(agregar_quasar(poligonos, float(tamanho_km), bool(extrapolar), quasar.VERSAO))
+            largura_regra = float(largura_tripla) if usar_regra_tripla else None
+            df_inv = inv.preparar_inventario(
+                agregar_quasar(poligonos, float(tamanho_km), bool(extrapolar), largura_regra, quasar.VERSAO))
             auditoria = auditar_quasar(poligonos, quasar.VERSAO)
             st.success(
                 f"Inventário gerado a partir do Quasar: {len(df_inv)} trechos de até {tamanho_km:g} km, "
                 f"{len(poligonos):,} polígonos lidos."
                 + (" Áreas estimadas para 100% de cada km." if extrapolar else "")
             )
+            if largura_regra is not None:
+                _, _mask_tripla = quasar.aplicar_regra_trator_47(poligonos, largura_regra)
+                st.caption(
+                    f"🚜 Regra do Trator 4,70: {int(_mask_tripla.sum()):,} polígono(s) de Trator 1.7m com canteiro acima de "
+                    f"{largura_regra:g} m e sem bloqueio ({poligonos.loc[_mask_tripla, 'area_mecanizada_m2'].sum():,.0f} m² "
+                    "mecanizados) passaram a aceitar também o Trator 4.7m."
+                )
     except Exception as e:
         _msg, _detalhe = erros.traduzir_erro(e, "ler o arquivo e montar o inventário")
         st.error(f"Não foi possível montar o inventário. {_msg}")
@@ -851,8 +874,9 @@ with aba_mec:
             # ---- Frota necessária (aditiva) ----------------------------------
             st.markdown("### Frota necessária por equipamento")
             st.caption(
-                "Cada equipamento atende a área que a análise indica para ele (não é 'se um só fizesse tudo'), "
-                "então os números somam. Ajuste produtividade e frota disponível conforme a realidade."
+                "Cada equipamento atende a área indicada para ele — ou a de outro, quando a tabela de substituição "
+                "permite e isso aproveita a folga de uma unidade que já existe —, então os números somam. Ajuste "
+                "produtividade e frota disponível conforme a realidade."
             )
             st.info(
                 "💡 'Qtd. disponível na frota' começa em 0 para todos os equipamentos — a coluna 'Situação da "
@@ -873,20 +897,51 @@ with aba_mec:
                 celulas_area[nome_eq] = l4.empty()
             st.caption("Produtividades marcadas como 'estimativa' em parametros_padrao.py — validar com dado de campo real antes de usar em contrato real.")
 
-            # Áreas com mais de um equipamento indicado: alternativas, não divisão.
-            # Alocadas pela capacidade de uma unidade no período mais exigente.
+            # Quem pode fazer área indicada para outro (restrição de tamanho e acesso).
+            with st.expander("🔁 Tabela de substituição — quem pode fazer área indicada para outro equipamento"):
+                st.caption(
+                    "A restrição é sempre de **tamanho e acesso**: o equipamento menor entra onde o maior entra (o "
+                    "Trator 1.7m faz área do 4.7m; o Eixo-zero, menor que o 1.7m, faz as duas) e o braço articulado faz "
+                    "área de Spider se alcançar. O app só usa a substituição para **ocupar a folga de unidades que já "
+                    "existem** e eliminar unidades parciais — nunca cria unidade nova por causa dela. Ajuste conforme "
+                    "o contrato."
+                )
+                df_subst = st.data_editor(
+                    pd.DataFrame({
+                        "Equipamento": nomes_eq,
+                        "Também faz área indicada para": [
+                            [x for x in pp.SUBSTITUICOES_PADRAO.get(n, []) if x in nomes_eq and x != n] for n in nomes_eq
+                        ],
+                    }),
+                    key="mec_substituicoes", hide_index=True, width="stretch", num_rows="fixed", disabled=["Equipamento"],
+                    column_config={"Também faz área indicada para": st.column_config.MultiselectColumn(
+                        "Também faz área indicada para", options=nomes_eq)},
+                )
+            substituicoes = {
+                r["Equipamento"]: [x for x in (r["Também faz área indicada para"] or []) if x != r["Equipamento"]]
+                for _, r in df_subst.iterrows()
+            }
+
+            # Áreas com alternativas e substituições, pela capacidade de uma
+            # unidade no período mais exigente.
             if ciclos_chuva_m / meses_chuva_m >= ciclos_seca_m / meses_seca_m:
                 ciclos_ref, meses_ref = ciclos_chuva_m, meses_chuva_m
             else:
                 ciclos_ref, meses_ref = ciclos_seca_m, meses_seca_m
-            areas_eq, df_aloc = mecanizacao.alocar_alternativas(
+            areas_eq, df_aloc, df_trocas = mecanizacao.alocar_frota(
                 areas_ind, {n: e[0] for n, e in entradas.items()},
                 {n: dim.capacidade_por_ciclo(e[0], ciclos_ref, meses_ref) for n, e in entradas.items()},
+                substituicoes,
             )
             equipamentos = {}
             for nome_eq, (prod, qtd_disp) in entradas.items():
                 area_eq = float(areas_eq[nome_eq].sum()) if nome_eq in areas_eq.columns else 0.0
-                celulas_area[nome_eq].markdown(f"{area_eq:,.0f}")
+                indicada = float(areas_ind[nome_eq].sum()) if nome_eq in areas_ind.columns else 0.0
+                if area_eq <= 0 and indicada > 0:
+                    celulas_area[nome_eq].markdown("0", help=f"{indicada:,.0f} m² indicados para ele foram assumidos pela folga "
+                                                          "de outro equipamento (ver ♻️ Remanejamentos) — não precisa de unidade.")
+                else:
+                    celulas_area[nome_eq].markdown(f"{area_eq:,.0f}")
                 if area_eq > 0:
                     equipamentos[nome_eq] = {"produtividade": prod, "qtd_disponivel": qtd_disp, "area": area_eq}
             if not df_aloc.empty:
@@ -901,6 +956,15 @@ with aba_mec:
                     )
                     st.dataframe(df_aloc, width="stretch", hide_index=True)
                 memoria_divisoes["Alocação alternativas"] = df_aloc
+            if not df_trocas.empty:
+                with st.expander(f"♻️ Remanejamentos que eliminam unidades parciais — {df_trocas['Área (m²)'].sum():,.0f} m²"):
+                    st.caption(
+                        "Área que saiu do equipamento indicado (ou escolhido) para a **folga** de outro que pode fazê-la "
+                        "(alternativa do polígono ou substituição pela tabela acima). Cada remanejamento só acontece se "
+                        "elimina uma unidade inteira do equipamento de origem — sem criar unidade nova no destino."
+                    )
+                    st.dataframe(df_trocas, width="stretch", hide_index=True)
+                memoria_divisoes["Remanejamentos"] = df_trocas
 
             linhas_frota, resultados_eq = [], {}
             for nome_eq, d in equipamentos.items():
@@ -943,8 +1007,8 @@ with aba_mec:
                 st.caption(
                     f"🧮 Somando a fração exata de cada equipamento dá **{total_exato:.1f} unidades**; o arredondamento "
                     f"para cima de cada tipo separadamente acrescenta {total_pico - total_exato:.1f}. Essa diferença é "
-                    "a folga das últimas unidades de cada tipo — só pode ser recuperada se um equipamento puder "
-                    "atender área indicada para outro."
+                    "a folga das últimas unidades de cada tipo, que sobra quando nenhum outro equipamento pode "
+                    "assumir aquela área (ver a tabela de substituição)."
                 )
             subutilizados = [
                 f"**{r['Equipamento']}** ({r['Área atendida (m²)']:,.0f} m², utilização de {r['Utilização das unidades (%)']:.0f}%)"
@@ -1235,8 +1299,11 @@ premissas = [
     ("Roçada mecanizada", "A área mecanizada de cada trecho vai para o equipamento indicado pelo Quasar. Polígonos com mais "
                           "de um equipamento indicado são alternativas (qualquer um faria a área inteira, não há divisão): a área "
                           "preenche primeiro a folga das unidades já necessárias e o restante vai para a alternativa de maior "
-                          "produtividade (ver aba 'Alocação alternativas'). Produtividades por equipamento são estimativas a "
-                          "validar com dado de campo."),
+                          "produtividade (ver aba 'Alocação alternativas'). Depois, área de um equipamento passa para a folga de "
+                          "outro que pode fazê-la (tabela de substituição por tamanho e acesso) sempre que isso elimina uma "
+                          "unidade inteira (aba 'Remanejamentos'). Regra do Trator 4,70 no Quasar: canteiro indicado para Trator "
+                          "1.7m, mais largo que o limite e sem bloqueio, aceita também o 4.7m. Produtividades por equipamento "
+                          "são estimativas a validar com dado de campo."),
     ("Divisão por trecho", "Trechos percorridos por rodovia e km; cada unidade é preenchida até a capacidade do ciclo antes "
                            "de abrir a seguinte; um trecho é cortado no km em que a capacidade acaba. Só a última unidade pode ter folga."),
     ("Extensão (Quasar)", "Extensão física = do 1º ao último km mapeado de cada rodovia (passo entre posições), sem somar "

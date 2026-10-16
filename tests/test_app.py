@@ -136,7 +136,7 @@ def test_equipamentos_alternativos_nao_dividem_area():
         "Spider": [0.0, 20_000.0],            # 1 unidade, folga de 30.000
         "Trator 1.7m ou Spider": [0.0, 100_000.0],
     })
-    alocado, explicacao = mec.alocar_alternativas(areas, prod, cap)
+    alocado, explicacao, _ = mec.alocar_frota(areas, prod, cap)
     assert list(alocado.columns) == ["Trator 1.7m", "Spider"]
     assert abs(alocado.values.sum() - areas.values.sum()) < 1e-6, "área tem de ser conservada"
     # folga do trator (50.000) + folga do spider (30.000) + resto (20.000) para o trator
@@ -152,6 +152,49 @@ def test_equipamentos_alternativos_nao_dividem_area():
     assert coluna in df.columns and df[coluna].sum() == 1000
     from modules import quasar
     assert quasar.equipamentos_do_inventario(df) == {"Trator 1.7m ou Spider": coluna}
+
+
+def test_substituicao_elimina_unidade_parcial():
+    """Pergunta 31 (2026-10-16): restrição de tamanho e acesso. O Eixo-zero faz área
+    de Trator 1.7m; a área da última unidade do trator vai para a folga do Eixo-zero
+    e o trator perde 1 unidade. Sem a substituição, nada muda. Nunca cria unidade."""
+    import math
+    import pandas as pd
+    from modules import mecanizacao as mec
+    cap = {"Trator 1.7m": 300_000.0, "Eixo-zero": 400_000.0, "Trator 4.7m": 600_000.0}
+    prod = {"Trator 1.7m": 20_000, "Eixo-zero": 30_000, "Trator 4.7m": 40_000}
+    areas = pd.DataFrame({
+        "Trator 1.7m": [300_000.0, 50_000.0],   # 1,17 unidade -> 2
+        "Eixo-zero": [100_000.0, 0.0],          # 0,25 unidade -> 1 (folga 300.000)
+        "Trator 4.7m": [10_000.0, 0.0],         # 0,02 unidade -> 1
+    })
+
+    def unidades(df):
+        return {t: math.ceil(df[t].sum() / cap[t] - 1e-9) for t in df.columns}
+
+    sem, _, trocas_sem = mec.alocar_frota(areas, prod, cap)
+    assert unidades(sem) == {"Trator 4.7m": 1, "Trator 1.7m": 2, "Eixo-zero": 1} and trocas_sem.empty
+    com, _, trocas = mec.alocar_frota(areas, prod, cap, pp.SUBSTITUICOES_PADRAO)
+    assert abs(com.values.sum() - areas.values.sum()) < 1e-6
+    assert unidades(com) == {"Trator 1.7m": 1, "Eixo-zero": 1}, unidades(com)  # 4.7m e 1 trator a menos
+    assert set(trocas["Executado por"]) <= {"Eixo-zero", "Trator 1.7m"}
+
+
+def test_regra_trator_47_quasar():
+    """Pergunta 32: canteiro > 5 m, sem bloqueio, indicado para Trator 1.7m, aceita
+    também o 4.7m; Eixo-zero e bloqueados não mudam."""
+    import pandas as pd
+    from modules import quasar
+    df = pd.DataFrame({
+        "equipamento": ["Trator 1.7m", "Trator 1.7m", "Trator 1.7m", "Eixo-zero", "Trator 1.7m"],
+        "largura_m": [8.0, 4.0, 8.0, 8.0, 8.0],
+        "bloqueio": [False, False, True, False, False],
+        "observacao": ["", "", "", "", "drenagem + defensa"],
+        "area_mecanizada_m2": [100.0] * 5,
+    })
+    novo, mascara = quasar.aplicar_regra_trator_47(df, 5.0)
+    assert mascara.tolist() == [True, False, False, False, False]
+    assert novo.loc[0, "equipamento"] == "Trator 1.7m, Trator 4.7m"
 
 
 def test_aceiro_drenagem_fora_em_ciclos_por_ano():
