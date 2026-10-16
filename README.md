@@ -81,12 +81,16 @@ Para fechar: volte no PowerShell e aperte `Ctrl+C`.
 2. **Aba Vegetação e Clima** (opcional, recomendada): estima os **ciclos de roçada pelo
    crescimento da vegetação**. Informe a altura máxima do contrato (30 cm, 50 cm ou outra),
    a altura pós-corte (3–5 cm), o solo, o estado (clima de referência já embutido para os
-   27 estados, não precisa de internet) ou a coordenada do trecho (consulta gratuita à
+   27 estados, ponto da capital; em SP, Campinas; não precisa de internet) ou a coordenada do trecho (consulta gratuita à
    NASA POWER — envia só a coordenada) e as espécies predominantes com a % de cobertura.
+   A água disponível de cada mês vem de um **balanço hídrico** (chuva − evaporação, com a
+   água que o solo guarda de um mês para o outro; o solo escolhido define quanto ele guarda).
    O app mostra o crescimento mês a mês, quantos dias a vegetação leva para chegar à
    altura máxima (prazo máximo para a equipe percorrer o trecho e voltar) e os ciclos de
-   chuva e seca. Com medições de campo (dias desde a roçada + altura medida), o modelo é
-   calibrado. O botão **"Usar estes ciclos..."** preenche as abas de roçada.
+   chuva e seca, indicando qual mês de cada período define os ciclos (o de crescimento
+   mais rápido). Com medições de campo (dias desde a roçada + altura medida), o modelo é
+   calibrado — o app compara com o crescimento previsto para todos os dias desde a roçada,
+   mesmo que eles cubram mais de um mês. O botão **"Usar estes ciclos..."** preenche as abas de roçada.
 3. **Aba Roçada Manual**: escolha *Metas de performance* ou *Personalizado*, ajuste ciclos
    e meses (chuva/seca). **Ciclos são contados dentro de cada período** (ex.: 10 ciclos nos
    7 meses de chuva), não por ano. A **proposta de divisão de equipes** enche cada equipe até a
@@ -222,5 +226,6 @@ O teste abre o app "por baixo dos panos" (sem navegador), carrega o inventário
 de exemplo e confere que: as quantidades de Full Service/Especialistas batem
 com o inventário; o "Contratado" acompanha o dimensionado; uma edição manual
 não é apagada; e o modelo de crescimento funciona para os 27 estados e preenche
-as abas de roçada. Leva cerca de 1 minuto e termina com `6/6 testes passaram`.
+as abas de roçada, e que a calibração por medição de campo considera todos os dias
+desde a roçada. Leva cerca de 1 minuto e termina com `7/7 testes passaram`.
 Não exige instalar nada além do que já está no `requirements.txt`.

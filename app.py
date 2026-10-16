@@ -438,8 +438,9 @@ with aba_veg:
     st.caption(
         "O ciclo é a frequência necessária para a vegetação não passar da altura máxima do contrato: "
         "**intervalo entre passagens = (altura máxima − altura pós-corte) ÷ crescimento (cm/dia)**. "
-        "O crescimento depende das espécies (temperatura-base e velocidade de cada uma), da temperatura e da chuva "
-        "de cada mês e do solo. Resultado: ciclos sugeridos para as abas de roçada."
+        "O crescimento depende das espécies (temperatura-base e velocidade de cada uma), da temperatura de cada mês "
+        "e da água disponível, calculada por balanço hídrico (chuva − evaporação, com a água que o solo guarda de um "
+        "mês para o outro). Resultado: ciclos sugeridos para as abas de roçada."
     )
 
     st.markdown("#### 1. Contrato")
@@ -454,7 +455,8 @@ with aba_veg:
                          value=crescimento.ALTURA_POS_CORTE_PADRAO_CM, step=0.5, key="veg_h0",
                          help="Não é contratual: é o que a roçadeira deixa (normalmente 3 a 5 cm).")
     solo = v3.selectbox("Solo predominante", list(crescimento.SOLOS), index=list(crescimento.SOLOS).index(crescimento.SOLO_PADRAO),
-                        key="veg_solo", help="Argiloso retém mais água e mantém algum crescimento na seca; arenoso seca rápido.")
+                        key="veg_solo", help="Quanto de água o solo guarda para a planta (balanço hídrico): arenoso 40 mm, médio 70 mm, "
+                             "argiloso 100 mm (estimativa). Solo que guarda mais segura o crescimento no começo da seca.")
     if h_max <= h0:
         st.error("A altura máxima precisa ser maior que a altura pós-corte.")
 
@@ -516,7 +518,8 @@ with aba_veg:
     with st.expander("Tenho medições de altura em campo"):
         st.caption(
             "Para cada ponto medido: o mês da medição, quantos dias se passaram desde a última roçada e a altura "
-            "medida. O app compara o crescimento real com o do modelo e ajusta todos os meses pelo mesmo fator. "
+            "medida. O app compara o crescimento real com o que o modelo prevê para esses mesmos dias (considerando "
+            "meados do mês da medição e os meses anteriores percorridos) e ajusta todos os meses pelo mesmo fator. "
             "A literatura usada vem de pastagem adubada — na faixa de domínio o crescimento real costuma ser menor, "
             "por isso calibrar é o que torna o número confiável para contrato."
         )
@@ -562,6 +565,7 @@ with aba_veg:
 
     df_mensal = pd.DataFrame({
         "Mês": crescimento.MESES, "Temperatura média (°C)": clima["temp_c"], "Chuva (mm)": clima["chuva_mm"],
+        "Água disponível (%)": [round(f * 100) for f in crescimento.fator_agua_mensal(clima, solo)],
         "Crescimento (cm/dia)": [round(t, 2) for t in taxas],
         "Período": ["Chuva" if i in idx_alto else "Seca" for i in range(12)],
     })
@@ -585,6 +589,10 @@ with aba_veg:
                         f"Crescimento {res['taxa']:.2f} cm/dia → leva **{res['intervalo_dias']:.0f} dias** para ir de "
                         f"{h0:g} a {h_max:g} cm. É o prazo máximo para a equipe percorrer o trecho inteiro e voltar ao mesmo ponto."
                     )
+                    if criterio == "critico":
+                        idx_p = idx_alto if nome_p == "chuva" else idx_baixo
+                        st.caption(f"📌 Mês que define os ciclos da {nome_p}: **{crescimento.MESES[max(idx_p, key=lambda i: taxas[i])]}** "
+                                   "(o de crescimento mais rápido no período).")
                 else:
                     st.metric("Ciclos no período", "0")
                     st.caption("Sem crescimento relevante neste período (frio ou seco demais para as espécies informadas).")
