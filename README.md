@@ -90,19 +90,29 @@ Para fechar: volte no PowerShell e aperte `Ctrl+C`.
    chuva e seca, indicando qual mês de cada período define os ciclos (o de crescimento
    mais rápido). Com medições de campo (dias desde a roçada + altura medida), o modelo é
    calibrado — o app compara com o crescimento previsto para todos os dias desde a roçada,
-   mesmo que eles cubram mais de um mês. O botão **"Usar estes ciclos..."** preenche as abas de roçada.
+   mesmo que eles cubram mais de um mês, e mostra a conta de cada medição. A **memória de
+   cálculo** (crescimento térmico de cada espécie × água disponível × fator de calibração →
+   cm/dia → dias até a altura máxima → ciclos) aparece na tela e vai para o Excel. O botão **"Usar estes ciclos..."** preenche as abas de roçada.
 3. **Aba Roçada Manual**: escolha *Metas de performance* ou *Personalizado*, ajuste ciclos
    e meses (chuva/seca). **Ciclos são contados dentro de cada período** (ex.: 10 ciclos nos
    7 meses de chuva), não por ano. A **proposta de divisão de equipes** enche cada equipe até a
    capacidade do ciclo, na ordem dos km, cortando o trecho onde a capacidade acaba —
    só a última equipe pode ter folga. Dá para aceitar uma ocupação máxima acima de 100%
    e impedir que uma equipe atravesse de uma rodovia para outra.
-4. **Aba Roçada Mecanizada**: a área mecanizada é distribuída entre os equipamentos que
-   o Quasar indica (Trator 4.7m, Trator 1.7m, Trator com braço articulado, Eixo-zero,
-   Spider). Mostra a frota necessária por equipamento (somável), o equipamento
+4. **Aba Roçada Mecanizada**: a área mecanizada vai para o equipamento que o Quasar indica
+   (Trator 4.7m, Trator 1.7m, Trator com braço articulado, Eixo-zero, Spider). Quando um
+   polígono indica mais de um ("Trator 1.7m, Spider"), são **alternativas** — qualquer um faria
+   a área inteira, ela não é dividida: preenche primeiro a folga das unidades que já são
+   necessárias e o resto vai para o de maior produtividade (quadro "🔀 Áreas em que mais de
+   um equipamento pode trabalhar"). Mostra a frota necessária por equipamento (somável), o equipamento
    recomendado por trecho (com o mix e a justificativa técnica) e a divisão de trechos
    por unidade de cada equipamento. Informe a frota disponível para ver sobra/falta.
 5. **Aba Full Service**: aceiro, drenagem, capina, refilamento, calçada, placas, remoção de lixo.
+   **Aceiro e Drenagem fora da plataforma** são em **ciclos por ano** (como nos contratos
+   Artesp: 1 ciclo/ano, feito na seca): informe 2 cenários para comparar (padrão 1 e 2
+   ciclos/ano), quando a atividade é feita (seca, chuva ou ano todo) e quantos meses dura
+   a janela, e escolha o cenário que entra no dimensionamento. Fora da janela não há equipe
+   alocada. As demais atividades seguem com ciclos por período de chuva e de seca.
 6. **Aba Especialistas**: EPS/barreira, defensa metálica, NC, varrição, poda.
 7. **Aba Análise de Contrato**: informe quantas equipes/unidades o contrato atual prevê por
    atividade e veja déficit/excedente (com %).
@@ -226,6 +236,8 @@ O teste abre o app "por baixo dos panos" (sem navegador), carrega o inventário
 de exemplo e confere que: as quantidades de Full Service/Especialistas batem
 com o inventário; o "Contratado" acompanha o dimensionado; uma edição manual
 não é apagada; e o modelo de crescimento funciona para os 27 estados e preenche
-as abas de roçada, e que a calibração por medição de campo considera todos os dias
-desde a roçada. Leva cerca de 1 minuto e termina com `7/7 testes passaram`.
+as abas de roçada; que a calibração por medição de campo considera todos os dias
+desde a roçada; que a memória de cálculo do crescimento bate com o resultado; e que
+equipamentos alternativos não dividem a área; e que Aceiro/Drenagem fora usam ciclos por
+ano. Leva cerca de 1 minuto e termina com `10/10 testes passaram`.
 Não exige instalar nada além do que já está no `requirements.txt`.

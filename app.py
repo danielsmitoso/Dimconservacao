@@ -155,6 +155,45 @@ def legenda_ciclos(prefixo: str):
                    "(espécies, clima e solo da região), use a aba 🌿 Vegetação e Clima.")
 
 
+def atividade_ciclos_por_ano(nome_ativ: str, cfg: dict, quantidade: float):
+    """Atividade feita N vezes por ano numa janela (ex.: Aceiro, 1 ciclo/ano na
+    seca), no formato da aba Especialistas: 2 cenários de ciclos/ano para comparar
+    e um adotado no dimensionamento. Devolve (cc, mc, cs, ms, meta) no formato
+    chuva/seca do resto do app: o ciclo cai no período da janela e o outro fica
+    com 0 ciclos ("Ano todo" usa 12 meses nos dois). Pedido do Omar, 2026-10-16."""
+    col1, col2, col3 = st.columns(3)
+    meta = col1.number_input("Meta/dia por equipe", min_value=0.01, value=float(cfg["meta_dia"]), key=f"fs_meta_{nome_ativ}")
+    ca1 = col2.number_input("Ciclos/ano — cenário 1", min_value=1, value=int(cfg["ciclos_ano"]), key=f"fs_ca1_{nome_ativ}")
+    ca2 = col3.number_input("Ciclos/ano — cenário 2", min_value=1, value=int(cfg["ciclos_ano_alt"]), key=f"fs_ca2_{nome_ativ}")
+    janelas = list(pp.JANELAS_EXECUCAO)
+    janela = col1.selectbox("Executado em", janelas, index=janelas.index(cfg["janela"]), key=f"fs_jan_{nome_ativ}",
+                            help="Período do ano em que a atividade é feita. Contratos Artesp: aceiro e drenagem fora "
+                                 "da plataforma, 1 ciclo/ano na seca.")
+    sincronizar_padrao(f"fs_mj_{nome_ativ}", pp.JANELAS_EXECUCAO[janela])
+    meses = col2.number_input("Meses da janela de execução", min_value=1, max_value=12, key=f"fs_mj_{nome_ativ}")
+    adotado = col3.radio("Cenário adotado no dimensionamento", ["Cenário 1", "Cenário 2"], horizontal=True,
+                         key=f"fs_cen_{nome_ativ}")
+    st.caption(f"Fonte: {cfg['fonte']}")
+    r1 = dim.calcular_equipes(quantidade, meta, ca1, meses)
+    r2 = dim.calcular_equipes(quantidade, meta, ca2, meses)
+    c1, c2 = st.columns(2)
+    c1.metric(f"Equipes — Cenário 1 ({ca1} ciclo(s)/ano)", r1.equipes_arredondadas,
+              help=f"Exato: {r1.equipes_exatas:.2f}. Todos os ciclos do ano feitos em {meses} meses ({janela.lower()}).")
+    c2.metric(f"Equipes — Cenário 2 ({ca2} ciclo(s)/ano)", r2.equipes_arredondadas,
+              help=f"Exato: {r2.equipes_exatas:.2f}. Todos os ciclos do ano feitos em {meses} meses ({janela.lower()}).")
+    ciclos = ca1 if adotado == "Cenário 1" else ca2
+    st.caption(
+        f"Dimensionamento usa o **{adotado.lower()}: {ciclos} ciclo(s)/ano em {meses} meses** ({janela.lower()}) → "
+        f"{quantidade:,.1f} {cfg['unidade']} × {ciclos} ÷ ({meses} × {dim.DIAS_UTEIS_MES_PADRAO} dias úteis × {meta:g}/dia). "
+        "Fora da janela, nenhuma equipe é alocada para esta atividade."
+    )
+    if janela == "Chuva":
+        return ciclos, meses, 0, max(1, 12 - meses), meta
+    if janela == "Seca":
+        return 0, max(1, 12 - meses), ciclos, meses, meta
+    return ciclos, meses, ciclos, meses, meta
+
+
 def colunas_trecho(df: pd.DataFrame) -> pd.DataFrame:
     return df[[c for c in ("trecho", "rodovia", "km_inicial", "km_final") if c in df.columns]].copy()
 
@@ -428,7 +467,8 @@ with aba_inv:
                     "Trechos onde atua": int((df_inv[c] > 0).sum()),
                 } for nome, c in colunas_eq.items()]
                 st.dataframe(pd.DataFrame(linhas_eq).sort_values("Área (m²)", ascending=False), width="stretch", hide_index=True)
-                st.caption("Polígonos com mais de um equipamento indicado dividem a área igualmente entre eles.")
+                st.caption("Polígonos com mais de um equipamento indicado são alternativas (qualquer um faria a área): "
+                           "a aba Roçada Mecanizada decide quem executa, aproveitando a folga da frota.")
 
 # ---------------------------------------------------------------------------
 # ABA: Vegetação e Clima (modelo de crescimento -> ciclos de roçada)
@@ -539,6 +579,19 @@ with aba_veg:
         ]
         fator = crescimento.fator_calibracao(observacoes, clima, composicao, solo, h0) if observacoes else None
         if fator:
+            mem_cal = crescimento.memoria_calibracao(observacoes, clima, composicao, solo, h0)
+            st.dataframe(pd.DataFrame([{
+                "Mês": crescimento.MESES[x["mes"]], "Dias desde a roçada": int(x["dias"]), "Altura medida (cm)": x["altura"],
+                f"Crescimento medido (cm) = altura − {h0:g}": round(x["medido"], 1),
+                "Previsto pelo modelo nos mesmos dias (cm)": round(x["previsto"], 1),
+                "Razão medido ÷ previsto": round(x["razao"], 2),
+            } for x in mem_cal]), hide_index=True, width="stretch")
+            st.caption(
+                f"**Fator de calibração = média das razões = {fator:.2f}.** O previsto soma, dia a dia para trás a partir "
+                "do meio do mês da medição, o crescimento do modelo sem calibração (térmico × água) de cada mês percorrido. "
+                f"O fator multiplica o crescimento em cm/dia de **todos os meses** (passo 4 da memória de cálculo do resultado): "
+                f"{fator:.2f} < 1 = o campo cresce menos que a literatura; > 1 = cresce mais."
+            )
             if st.checkbox(f"Aplicar fator de calibração {fator:.2f} (medições: {len(observacoes)})", value=True, key="veg_usar_fator"):
                 calibracao = fator
         elif observacoes:
@@ -596,6 +649,42 @@ with aba_veg:
                 else:
                     st.metric("Ciclos no período", "0")
                     st.caption("Sem crescimento relevante neste período (frio ou seco demais para as espécies informadas).")
+        linhas_mem = []
+        for nome_p, res, idx_p in (("Chuva", res_alto, idx_alto), ("Seca", res_baixo, idx_baixo)):
+            def _l(passo, conta, resultado):
+                linhas_mem.append({"Período": nome_p, "Passo": passo, "Resultado": resultado, "Conta": conta})
+            if criterio == "critico":
+                m = crescimento.memoria_taxa(clima, composicao, solo, calibracao, max(idx_p, key=lambda i: taxas[i]))
+                nome_mes = crescimento.MESES[m["mes"]]
+                _l("Mês usado", "mês de crescimento mais rápido do período (critério mês crítico)",
+                   f"{nome_mes} — {m['temp']:.1f} °C")
+                for e in m["especies"]:
+                    _l(f"1. Crescimento térmico — {e['especie']}",
+                       f"{e['peso'] * 100:.0f}% da cobertura × {e['k']:g} cm/grau-dia × ({m['temp']:.1f} − {e['tb']:g} °C base)",
+                       f"{e['contribuicao']:.3f} cm/dia")
+                _l("2. Crescimento sem falta de água", " + ".join(f"{e['contribuicao']:.3f}" for e in m["especies"]),
+                   f"{m['termico']:.3f} cm/dia")
+                _l("3. × água disponível (balanço hídrico)", f"{m['termico']:.3f} × {m['agua']:.2f}",
+                   f"{m['termico'] * m['agua']:.3f} cm/dia")
+                _l("4. × fator de calibração", f"{m['termico'] * m['agua']:.3f} × {calibracao:.2f}"
+                   + ("" if fator and calibracao != 1.0 else " (sem medição de campo aplicada)"), f"{m['taxa']:.3f} cm/dia")
+            else:
+                _l("1 a 4. Crescimento de cada mês", "térmico × água × calibração (tabela mensal): " + "; ".join(
+                    f"{crescimento.MESES[i]} {taxas[i]:.3f}" for i in idx_p), "cm/dia")
+                _l("Média do período", f"Σ(cm/dia × dias do mês) ÷ {res['dias']:.0f} dias", f"{res['taxa']:.3f} cm/dia")
+            if res["intervalo_dias"]:
+                _l("5. Dias até a altura máxima", f"({h_max:g} − {h0:g}) cm ÷ {res['taxa']:.3f} cm/dia",
+                   f"{res['intervalo_dias']:.1f} dias")
+                _l("6. Ciclos no período", f"{res['dias']:.0f} dias corridos do período ÷ {res['intervalo_dias']:.1f} dias",
+                   f"{res['ciclos']:.2f} → {max(1, math.ceil(res['ciclos']))} ciclos (arredondado para cima)")
+        with st.expander("🧮 Memória de cálculo do crescimento e dos ciclos"):
+            st.caption(
+                "Crescimento (cm/dia) = Σ[ % da cobertura × cm por grau-dia × (temperatura − temperatura-base) ] "
+                "× água disponível × fator de calibração. Dias até a altura máxima = (altura máx. − pós-corte) ÷ "
+                "crescimento. Ciclos = dias do período ÷ dias até a altura máxima."
+            )
+            st.dataframe(pd.DataFrame(linhas_mem), hide_index=True, width="stretch")
+            st.caption("Esta tabela vai para o Excel (aba 'Memória crescimento') quando os ciclos são aplicados nas abas de roçada.")
         ciclos_sug = {"cc": max(1, math.ceil(res_alto["ciclos"])), "mc": len(idx_alto),
                       "cs": max(1, math.ceil(res_baixo["ciclos"])), "ms": len(idx_baixo)}
         ref = pp.CICLOS_PADRAO["rocada"]
@@ -614,6 +703,7 @@ with aba_veg:
                           f"pós-corte {h0:g} cm; solo {solo.lower()}; critério: {criterio_rotulo}; "
                           f"calibração {calibracao:.2f}; espécies: "
                           + ", ".join(f"{e} {p:.0f}%" for e, p in composicao.items())),
+                "memoria": linhas_mem,
             }
             st.success("Ciclos e meses aplicados nas abas de roçada (você ainda pode editar lá).")
 
@@ -736,7 +826,12 @@ with aba_mec:
             equip_padrao = st.selectbox(
                 "Equipamento para toda a área mecanizada", lista_eq, index=lista_eq.index(pp.EQUIPAMENTO_PADRAO_SEM_INDICACAO)
             )
-        areas_eq, indicado = mecanizacao.areas_por_equipamento(df_inv, equip_padrao)
+        areas_ind, indicado = mecanizacao.areas_por_equipamento(df_inv, equip_padrao)
+        nomes_eq = list(dict.fromkeys(
+            p_ for c_ in areas_ind.columns for p_ in c_.split(pp.SEPARADOR_ALTERNATIVAS)
+        ))
+        ordem_cat = {n: i for i, n in enumerate(pp.ROCADA_MECANIZADA)}
+        nomes_eq.sort(key=lambda n: ordem_cat.get(n, 99))
 
         c1, c2 = st.columns(2)
         with c1:
@@ -750,7 +845,7 @@ with aba_mec:
         avisar_meses(meses_chuva_m, meses_seca_m)
         legenda_ciclos("mec")
 
-        if areas_eq.empty:
+        if areas_ind.empty:
             st.info("Não há área mecanizada no inventário — nada a dimensionar nesta aba.")
         else:
             # ---- Frota necessária (aditiva) ----------------------------------
@@ -767,17 +862,45 @@ with aba_mec:
             cab = st.columns([3, 2, 2, 2])
             for col, t_ in zip(cab, ["Equipamento", "Produtividade (m²/dia)", "Qtd. disponível na frota", "Área atendida (m²)"]):
                 col.markdown(f"**{t_}**")
-            equipamentos = {}
-            for nome_eq in areas_eq.columns:
+            entradas, celulas_area = {}, {}
+            for nome_eq in nomes_eq:
                 l1, l2, l3, l4 = st.columns([3, 2, 2, 2])
                 l1.markdown(f"**{nome_eq}**")
                 prod = l2.number_input(f"Produtividade {nome_eq}", min_value=1, value=mecanizacao.produtividade_padrao(nome_eq),
                                        key=f"prod_{nome_eq}", label_visibility="collapsed")
                 qtd_disp = l3.number_input(f"Frota {nome_eq}", min_value=0, value=0, key=f"qtd_{nome_eq}", label_visibility="collapsed")
-                area_eq = float(areas_eq[nome_eq].sum())
-                l4.markdown(f"{area_eq:,.0f}")
-                equipamentos[nome_eq] = {"produtividade": prod, "qtd_disponivel": qtd_disp, "area": area_eq}
+                entradas[nome_eq] = (prod, qtd_disp)
+                celulas_area[nome_eq] = l4.empty()
             st.caption("Produtividades marcadas como 'estimativa' em parametros_padrao.py — validar com dado de campo real antes de usar em contrato real.")
+
+            # Áreas com mais de um equipamento indicado: alternativas, não divisão.
+            # Alocadas pela capacidade de uma unidade no período mais exigente.
+            if ciclos_chuva_m / meses_chuva_m >= ciclos_seca_m / meses_seca_m:
+                ciclos_ref, meses_ref = ciclos_chuva_m, meses_chuva_m
+            else:
+                ciclos_ref, meses_ref = ciclos_seca_m, meses_seca_m
+            areas_eq, df_aloc = mecanizacao.alocar_alternativas(
+                areas_ind, {n: e[0] for n, e in entradas.items()},
+                {n: dim.capacidade_por_ciclo(e[0], ciclos_ref, meses_ref) for n, e in entradas.items()},
+            )
+            equipamentos = {}
+            for nome_eq, (prod, qtd_disp) in entradas.items():
+                area_eq = float(areas_eq[nome_eq].sum()) if nome_eq in areas_eq.columns else 0.0
+                celulas_area[nome_eq].markdown(f"{area_eq:,.0f}")
+                if area_eq > 0:
+                    equipamentos[nome_eq] = {"produtividade": prod, "qtd_disponivel": qtd_disp, "area": area_eq}
+            if not df_aloc.empty:
+                with st.expander(f"🔀 Áreas em que mais de um equipamento pode trabalhar — {df_aloc['Área (m²)'].sum():,.0f} m²"):
+                    st.caption(
+                        "Quando o inventário indica mais de um equipamento para o mesmo polígono (ex.: 'Trator 1.7m, "
+                        "Spider'), as indicações são **alternativas independentes**: o trator poderia fazer a área "
+                        "inteira e o spider também. A área **não é dividida** entre eles. Ela vai: **(1)** para a folga "
+                        "das unidades que já são necessárias pela área exclusiva de cada equipamento (a última unidade "
+                        "quase nunca fica 100% ocupada) e **(2)** o que sobrar, para a alternativa de maior "
+                        "produtividade, que exige menos unidades novas."
+                    )
+                    st.dataframe(df_aloc, width="stretch", hide_index=True)
+                memoria_divisoes["Alocação alternativas"] = df_aloc
 
             linhas_frota, resultados_eq = [], {}
             for nome_eq, d in equipamentos.items():
@@ -815,6 +938,14 @@ with aba_mec:
             total_pico = int(df_frota["Necessário — Pico"].sum())
             detalhe_frota = ", ".join(f"{r['Necessário — Pico']} {r['Equipamento']}" for r in linhas_frota if r["Necessário — Pico"])
             st.success(f"Frota mecanizada necessária no cenário de pico: **{total_pico} equipamento(s)** ({detalhe_frota}).")
+            total_exato = sum(r["pico"].equipes_exatas for r in resultados_eq.values())
+            if total_pico - total_exato >= 0.5:
+                st.caption(
+                    f"🧮 Somando a fração exata de cada equipamento dá **{total_exato:.1f} unidades**; o arredondamento "
+                    f"para cima de cada tipo separadamente acrescenta {total_pico - total_exato:.1f}. Essa diferença é "
+                    "a folga das últimas unidades de cada tipo — só pode ser recuperada se um equipamento puder "
+                    "atender área indicada para outro."
+                )
             subutilizados = [
                 f"**{r['Equipamento']}** ({r['Área atendida (m²)']:,.0f} m², utilização de {r['Utilização das unidades (%)']:.0f}%)"
                 for r in linhas_frota if r["Necessário — Pico"] and r["Utilização das unidades (%)"] < 40
@@ -900,20 +1031,24 @@ with aba_fs:
                     f"Quantidade ({cfg['unidade']})" + ("" if tem_coluna else " — não há coluna no inventário, informe manualmente"),
                     min_value=0.0, key=f"fs_qtd_{nome_ativ}",
                 )
-                col1, col2, col3 = st.columns(3)
-                meta = col1.number_input("Meta/dia por equipe", min_value=0.01, value=float(cfg["meta_dia"]), key=f"fs_meta_{nome_ativ}")
-                cchuva = col2.number_input("Ciclos/ano (chuva)", min_value=1, value=cfg["ciclos_chuva"], key=f"fs_cc_{nome_ativ}")
-                mchuva = col2.number_input("Meses (chuva)", min_value=1, max_value=12, value=cfg["meses_chuva"], key=f"fs_mc_{nome_ativ}")
-                cseca = col3.number_input("Ciclos/ano (seca)", min_value=1, value=cfg["ciclos_seca"], key=f"fs_csc_{nome_ativ}")
-                mseca = col3.number_input("Meses (seca)", min_value=1, max_value=12, value=cfg["meses_seca"], key=f"fs_ms_{nome_ativ}")
-                st.caption(f"Fonte: {cfg['fonte']}")
+                if cfg.get("modo") == "anual":
+                    cchuva, mchuva, cseca, mseca, meta = atividade_ciclos_por_ano(nome_ativ, cfg, quantidade)
+                    resultado = dim.dimensionar_chuva_seca(quantidade, meta, cchuva, mchuva, cseca, mseca)
+                else:
+                    col1, col2, col3 = st.columns(3)
+                    meta = col1.number_input("Meta/dia por equipe", min_value=0.01, value=float(cfg["meta_dia"]), key=f"fs_meta_{nome_ativ}")
+                    cchuva = col2.number_input("Ciclos no período de chuva", min_value=1, value=cfg["ciclos_chuva"], key=f"fs_cc_{nome_ativ}")
+                    mchuva = col2.number_input("Meses (chuva)", min_value=1, max_value=12, value=cfg["meses_chuva"], key=f"fs_mc_{nome_ativ}")
+                    cseca = col3.number_input("Ciclos no período de seca", min_value=1, value=cfg["ciclos_seca"], key=f"fs_csc_{nome_ativ}")
+                    mseca = col3.number_input("Meses (seca)", min_value=1, max_value=12, value=cfg["meses_seca"], key=f"fs_ms_{nome_ativ}")
+                    st.caption(f"Fonte: {cfg['fonte']}")
 
-                avisar_meses(mchuva, mseca)
-                resultado = dim.dimensionar_chuva_seca(quantidade, meta, cchuva, mchuva, cseca, mseca)
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Equipes — Chuva", resultado["chuva"].equipes_arredondadas)
-                c2.metric("Equipes — Seca", resultado["seca"].equipes_arredondadas)
-                c3.metric("Pico", resultado["pico"].equipes_arredondadas)
+                    avisar_meses(mchuva, mseca)
+                    resultado = dim.dimensionar_chuva_seca(quantidade, meta, cchuva, mchuva, cseca, mseca)
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Equipes — Chuva", resultado["chuva"].equipes_arredondadas)
+                    c2.metric("Equipes — Seca", resultado["seca"].equipes_arredondadas)
+                    c3.metric("Pico", resultado["pico"].equipes_arredondadas)
 
                 linhas_relatorio.append([
                     nome_ativ, cfg["unidade"], f"{quantidade:,.1f}",
@@ -1097,9 +1232,11 @@ premissas = [
     ("Roçada manual", f"Produtividade por roçador (colaborador individual), não por equipe. Equipe padrão: "
                       f"{pp.COMPOSICAO_EQUIPE_ROCADA_MANUAL['total_colaboradores']} colaboradores, "
                       f"{pp.COMPOSICAO_EQUIPE_ROCADA_MANUAL['rocadores_ativos']} roçando (ajustável na aba)."),
-    ("Roçada mecanizada", "A área mecanizada de cada trecho é distribuída entre os equipamentos indicados pelo Quasar "
-                          "(polígonos com mais de um equipamento dividem a área igualmente). Produtividades por equipamento "
-                          "são estimativas a validar com dado de campo."),
+    ("Roçada mecanizada", "A área mecanizada de cada trecho vai para o equipamento indicado pelo Quasar. Polígonos com mais "
+                          "de um equipamento indicado são alternativas (qualquer um faria a área inteira, não há divisão): a área "
+                          "preenche primeiro a folga das unidades já necessárias e o restante vai para a alternativa de maior "
+                          "produtividade (ver aba 'Alocação alternativas'). Produtividades por equipamento são estimativas a "
+                          "validar com dado de campo."),
     ("Divisão por trecho", "Trechos percorridos por rodovia e km; cada unidade é preenchida até a capacidade do ciclo antes "
                            "de abrir a seguinte; um trecho é cortado no km em que a capacidade acaba. Só a última unidade pode ter folga."),
     ("Extensão (Quasar)", "Extensão física = do 1º ao último km mapeado de cada rodovia (passo entre posições), sem somar "
@@ -1109,7 +1246,10 @@ premissas = [
 ]
 if ciclos_do_modelo("man") or ciclos_do_modelo("mec"):
     premissas.append(("Ciclos de roçada", st.session_state["veg_aplicado"]["texto"] + ". Ciclos no período = dias do "
-                      "período ÷ ((altura máx. − pós-corte) ÷ crescimento em cm/dia), arredondado para cima."))
+                      "período ÷ ((altura máx. − pós-corte) ÷ crescimento em cm/dia), arredondado para cima. Passo a passo "
+                      "na aba 'Memória crescimento'."))
+    if st.session_state["veg_aplicado"].get("memoria"):
+        memoria_divisoes["Memória crescimento"] = pd.DataFrame(st.session_state["veg_aplicado"]["memoria"])
 
 with aba_export:
     st.subheader("Exportar relatório e memória de cálculo")
