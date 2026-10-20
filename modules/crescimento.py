@@ -14,9 +14,13 @@ f_água vem do balanço hídrico mensal (Thornthwaite-Mather), desde 2026-10-15.
 
 Ver retroanalises/proposta_modelo_crescimento.md (fontes e premissas).
 """
+import gzip
 import json
 import math
 import urllib.request
+from datetime import date, timedelta
+from functools import lru_cache
+from pathlib import Path
 
 DIAS_MES = [31, 28.25, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 MESES = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
@@ -247,14 +251,17 @@ def memoria_taxa(clima: dict, composicao: dict, solo: str, calibracao: float, me
             "calibracao": calibracao, "taxa": termico * agua * calibracao}
 
 
-def meses_crescimento_alto(taxas: list[float]) -> list[int]:
-    """Índices (0-11) dos meses com crescimento acima da média anual -- é o
-    "período de chuva" do dimensionamento. No Sul, onde chove o ano todo, quem
-    separa os períodos é o frio do inverno; por isso a divisão é pela taxa de
-    crescimento e não só pela chuva."""
-    media = sum(taxas) / 12
-    altos = [i for i, t in enumerate(taxas) if t >= media]
-    return altos if 0 < len(altos) < 12 else list(range(6))
+def meses_crescimento_alto(taxas: list[float], n_meses: int = 6) -> list[int]:
+    """Índices (0-11) do "período de chuva" do dimensionamento: os `n_meses`
+    CONSECUTIVOS (podendo virar o ano, ex.: out a mar) com o maior crescimento
+    somado. Padrão 6 + 6, a divisão usada na prática (usuário, 2026-10-20); antes
+    eram os meses acima da média anual, o que dava 7 + 5 em SP e de 5 a 9 meses
+    conforme o estado. No Sul, onde chove o ano todo, quem separa os períodos é o
+    frio do inverno; por isso a divisão é pela taxa de crescimento e não só pela
+    chuva."""
+    n_meses = max(1, min(11, int(n_meses)))
+    inicio = max(range(12), key=lambda s: (sum(taxas[(s + k) % 12] for k in range(n_meses)), -s))
+    return sorted((inicio + k) % 12 for k in range(n_meses))
 
 
 def ciclos_periodo(taxas: list[float], meses: list[int], h_max: float, h0: float, criterio: str = "critico") -> dict:
@@ -290,10 +297,13 @@ def crescimento_acumulado(taxas: list[float], mes: int, dias: float) -> float:
     return total
 
 
-def memoria_calibracao(observacoes: list[dict], clima: dict, composicao: dict, solo: str, h0: float) -> list[dict]:
+def memoria_calibracao(observacoes: list[dict], clima: dict | None, composicao: dict, solo: str, h0: float,
+                       base: list[float] | None = None) -> list[dict]:
     """Uma linha por medição válida: crescimento medido (altura − pós-corte),
-    crescimento que o modelo (sem calibração) prevê para os mesmos dias e a razão."""
-    base = taxa_mensal(clima, composicao, solo, 1.0)
+    crescimento que o modelo (sem calibração) prevê para os mesmos dias e a razão.
+    `base` = crescimento médio de cada mês sem calibração (modelo v2); sem ela, usa o v1."""
+    if base is None:
+        base = taxa_mensal(clima, composicao, solo, 1.0)
     linhas = []
     for ob in observacoes:
         try:
@@ -310,12 +320,13 @@ def memoria_calibracao(observacoes: list[dict], clima: dict, composicao: dict, s
     return linhas
 
 
-def fator_calibracao(observacoes: list[dict], clima: dict, composicao: dict, solo: str, h0: float) -> float | None:
+def fator_calibracao(observacoes: list[dict], clima: dict | None, composicao: dict, solo: str, h0: float,
+                     base: list[float] | None = None) -> float | None:
     """Ajusta o modelo ao campo. Cada observação: {"mes": 0-11, "dias": dias desde a
     última roçada, "altura_cm": altura medida hoje}. Fator = média(crescimento medido ÷
     crescimento do modelo nos mesmos dias) -- uma medição de novembro com 60 dias
     cobre também setembro e outubro (item 44 do backlog)."""
-    linhas = memoria_calibracao(observacoes, clima, composicao, solo, h0)
+    linhas = memoria_calibracao(observacoes, clima, composicao, solo, h0, base)
     return sum(x["razao"] for x in linhas) / len(linhas) if linhas else None
 
 
@@ -333,3 +344,270 @@ def buscar_clima_coordenada(lat: float, lon: float, timeout: int = 30) -> dict:
         "temp_c": [round(dados["T2M"][m], 1) for m in chaves],
         "chuva_mm": [round(dados["PRECTOTCORR"][m] * DIAS_MES[i]) for i, m in enumerate(chaves)],
     }
+
+
+# =============================================================================
+# Modelo v2 (2026-10-20): diário, com 14 anos de dados. Ver
+# retroanalises/proposta_modelo_crescimento_v2.md. O v1 (mensal, acima) fica para
+# comparação. O que muda: graus-dia com mínima e máxima do dia (Ometto, 1981);
+# balanço hídrico DIÁRIO com evaporação de Hargreaves-Samani (FAO-56), que enxerga
+# a seca do inverno (com Thornthwaite, SP ficava com 100% de água em julho); pico de
+# 30 dias em vez do mês médio; ano típico ou exigente (P80); vários pontos de clima
+# combinados pela área que cada um representa; períodos escolhidos pela demanda.
+# Conta só o crescimento da vegetação: nenhuma margem operacional (usuário, 2026-10-20).
+# =============================================================================
+ARQUIVO_SERIE = Path(__file__).resolve().parent.parent / "dados_clima" / "nasa_power_diario_2011_2024.json.gz"
+TB_SUPERIOR = 38.0        # °C: acima disso o crescimento das gramíneas C4 cai
+JANELA_PICO_DIAS = 30     # janela da média móvel que define o pico de cada mês
+PERCENTIL_EXIGENTE = 0.8  # "ano exigente": percentil 80 entre os anos
+ANOS_AQUECIMENTO = 1      # o 1º ano da série só aquece o balanço hídrico (fica fora das médias)
+
+
+@lru_cache(maxsize=1)
+def _series_embutidas() -> dict:
+    with gzip.open(ARQUIVO_SERIE, "rt", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def serie_uf(uf: str) -> dict:
+    """Série diária 2011-2024 do ponto de referência da UF (embutida no app, offline)."""
+    dados = _series_embutidas()
+    s, ref = dados["ufs"][uf], CLIMA_UF[uf]
+    return {"referencia": f"{ref['nome']} ({uf}) — {ref['referencia']}", "lat": ref["lat"], "lon": ref["lon"],
+            "inicio": dados["inicio"], "tmin": s["tmin"], "tmax": s["tmax"], "chuva": s["chuva"],
+            "fonte": dados["fonte"]}
+
+
+def buscar_serie_coordenada(lat: float, lon: float, timeout: int = 120) -> dict:
+    """Série diária 2011-2024 de um ponto via NASA POWER (gratuita, sem chave; envia só
+    latitude e longitude). Levanta exceção se a rede bloquear."""
+    url = ("https://power.larc.nasa.gov/api/temporal/daily/point?parameters=T2M_MIN,T2M_MAX,PRECTOTCORR"
+           f"&community=ag&longitude={lon:.4f}&latitude={lat:.4f}&start=20110101&end=20241231&format=json")
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        dados = json.load(resp)["properties"]["parameter"]
+    dias = sorted(dados["T2M_MIN"])
+    saida = {}
+    for chave, nome in (("T2M_MIN", "tmin"), ("T2M_MAX", "tmax"), ("PRECTOTCORR", "chuva")):
+        valores, anterior = [], 0.0
+        for d in dias:
+            v = dados[chave][d]
+            if v is None or v <= -900:  # dia sem dado: repete o anterior
+                v = anterior
+            valores.append(round(v, 1))
+            anterior = v
+        saida[nome] = valores
+    return {"referencia": f"coordenada {lat:.4f}, {lon:.4f}", "lat": lat, "lon": lon, "inicio": dias[0],
+            "fonte": "NASA POWER, dados diários 2011-2024 do ponto informado (consulta ao vivo)", **saida}
+
+
+def graus_dia_ometto(tmin: float, tmax: float, tb: float, tb_sup: float = TB_SUPERIOR) -> float:
+    """Graus-dia de um dia pelo método de Ometto (1981), com a mínima e a máxima: conta
+    as horas acima da temperatura-base mesmo em dia de madrugada fria.
+    Tmín >= Tb: média − Tb; Tmín < Tb < Tmáx: (Tmáx − Tb)² ÷ (2 (Tmáx − Tmín)); Tmáx <= Tb: 0.
+    Acima da base superior (38 °C), desconta a parte que passa dela."""
+    if tmax <= tb:
+        return 0.0
+    if tmin >= tb:
+        gd = (tmax + tmin) / 2 - tb
+    else:
+        gd = (tmax - tb) ** 2 / (2 * (tmax - tmin))
+    if tmax > tb_sup:
+        gd -= (tmax - tb_sup) ** 2 / (2 * max(tmax - tmin, 0.1))
+    return max(0.0, gd)
+
+
+def etp_hargreaves(tmin: float, tmax: float, lat: float, dia_do_ano: int) -> float:
+    """Evaporação potencial do dia (mm) por Hargreaves-Samani (FAO-56, eq. 52): usa a
+    máxima, a mínima e a radiação no topo da atmosfera (latitude e data)."""
+    phi = math.radians(lat)
+    dr = 1 + 0.033 * math.cos(2 * math.pi * dia_do_ano / 365)
+    dec = 0.409 * math.sin(2 * math.pi * dia_do_ano / 365 - 1.39)
+    ws = math.acos(max(-1.0, min(1.0, -math.tan(phi) * math.tan(dec))))
+    ra = 24 * 60 / math.pi * 0.0820 * dr * (ws * math.sin(phi) * math.sin(dec)
+                                            + math.cos(phi) * math.cos(dec) * math.sin(ws))
+    tmed = (tmin + tmax) / 2
+    return max(0.0, 0.0023 * 0.408 * ra * (tmed + 17.8) * math.sqrt(max(tmax - tmin, 0.0)))
+
+
+def _normalizar(composicao: dict) -> dict:
+    total = sum(v for v in composicao.values() if v > 0)
+    if total <= 0:
+        return {ESPECIE_PADRAO: 1.0}
+    return {e: v / total for e, v in composicao.items() if v > 0}
+
+
+def _data_inicio(serie: dict) -> date:
+    s = str(serie["inicio"])
+    return date(int(s[:4]), int(s[4:6]), int(s[6:8]))
+
+
+def crescimento_diario(serie: dict, composicao: dict, solo: str = SOLO_PADRAO) -> dict:
+    """Crescimento (cm/dia, sem calibração) de cada dia da série:
+    Σ espécies[ cobertura × k × graus-dia de Ometto ] × água disponível do dia.
+    Água disponível = evaporação real ÷ potencial no balanço hídrico diário: o solo
+    guarda até a sua capacidade; sem chuva, a planta gasta o que sobrou."""
+    pesos = _normalizar(composicao)
+    cad = SOLOS.get(solo, SOLOS[SOLO_PADRAO])
+    inicio = _data_inicio(serie)
+    datas, taxa, termico, agua = [], [], [], []
+    gd = {e: [] for e in pesos}
+    armazenado = float(cad)
+    for i, (tmin, tmax, chuva) in enumerate(zip(serie["tmin"], serie["tmax"], serie["chuva"])):
+        dia = inicio + timedelta(days=i)
+        etp = etp_hargreaves(tmin, tmax, serie["lat"], dia.timetuple().tm_yday)
+        if chuva >= etp:
+            armazenado = min(cad, armazenado + chuva - etp)
+            etr = etp
+        else:
+            novo = armazenado * math.exp(-(etp - chuva) / cad)
+            etr = chuva + (armazenado - novo)
+            armazenado = novo
+        f_agua = min(1.0, etr / etp) if etp > 0 else 1.0
+        t = 0.0
+        for e, p in pesos.items():
+            g = graus_dia_ometto(tmin, tmax, ESPECIES[e]["tb"])
+            gd[e].append(g)
+            t += p * ESPECIES[e]["k"] * g
+        datas.append(dia)
+        termico.append(t)
+        agua.append(f_agua)
+        taxa.append(t * f_agua)
+    return {"datas": datas, "taxa": taxa, "termico": termico, "agua": agua, "gd": gd, "pesos": pesos}
+
+
+def combinar(pontos: list[tuple[float, dict]]) -> dict:
+    """Combina vários pontos de clima numa curva única, DIA A DIA, ponderada pela área
+    (ou extensão) que cada ponto representa. É a demanda total da concessão quando as
+    equipes atendem a concessão inteira: o pico combinado sai menor ou igual à média
+    dos picos, porque regiões diferentes não chegam ao pico no mesmo dia. (Se cada
+    região tem equipe própria, dimensione cada uma separada.)"""
+    pontos = [(p, c) for p, c in pontos if p > 0]
+    if len(pontos) == 1:
+        return pontos[0][1]
+    total = sum(p for p, _ in pontos)
+    n = min(len(c["taxa"]) for _, c in pontos)
+    w = [(p / total, c) for p, c in pontos]
+
+    def soma(serie_de):
+        return [sum(f * serie_de(c)[i] for f, c in w) for i in range(n)]
+
+    especies = w[0][1]["pesos"]
+    return {"datas": w[0][1]["datas"][:n], "taxa": soma(lambda c: c["taxa"]),
+            "termico": soma(lambda c: c["termico"]), "agua": soma(lambda c: c["agua"]),
+            "gd": {e: soma(lambda c, e=e: c["gd"][e]) for e in especies}, "pesos": especies}
+
+
+def _media_movel_centrada(valores: list[float], janela: int) -> list[float]:
+    acum = [0.0]
+    for v in valores:
+        acum.append(acum[-1] + v)
+    meio, n, saida = janela // 2, len(valores), []
+    for i in range(n):
+        a, b = max(0, i - meio), min(n, i - meio + janela)
+        saida.append((acum[b] - acum[a]) / (b - a))
+    return saida
+
+
+def _percentil(valores: list[float], q: float) -> float:
+    v = sorted(valores)
+    pos = q * (len(v) - 1)
+    baixo = int(pos)
+    alto = min(baixo + 1, len(v) - 1)
+    return v[baixo] + (v[alto] - v[baixo]) * (pos - baixo)
+
+
+def resumo_mensal(cresc: dict, janela: int = JANELA_PICO_DIAS) -> dict:
+    """Por mês (0-11), sem calibração:
+    media / media_p80 -- crescimento médio do mês (cm/dia): média dos anos (ano típico)
+                         e percentil 80 entre os anos (ano exigente);
+    pico / pico_p80   -- maior média móvel de 30 dias dentro do mês, idem;
+    termico, agua, gd -- médias do mês, para a memória de cálculo.
+    É o pico de 30 dias que dimensiona: um veranico de 3 dias não muda a equipe, um mês
+    inteiro de crescimento forte muda."""
+    movel = _media_movel_centrada(cresc["taxa"], janela)
+    ano0 = cresc["datas"][0].year + ANOS_AQUECIMENTO
+    grupos: dict = {}
+    for i, d in enumerate(cresc["datas"]):
+        if d.year >= ano0:
+            grupos.setdefault((d.year, d.month - 1), []).append(i)
+    anos = sorted({a for a, _ in grupos})
+    r = {k: [] for k in ("media", "media_p80", "pico", "pico_p80", "termico", "agua")}
+    r["gd"] = {e: [] for e in cresc["gd"]}
+    for m in range(12):
+        gs = [grupos[(a, m)] for a in anos if (a, m) in grupos]
+        medias = [sum(cresc["taxa"][i] for i in g) / len(g) for g in gs]
+        picos = [max(movel[i] for i in g) for g in gs]
+        dias_m = [i for g in gs for i in g]
+        r["media"].append(sum(medias) / len(medias))
+        r["media_p80"].append(_percentil(medias, PERCENTIL_EXIGENTE))
+        r["pico"].append(sum(picos) / len(picos))
+        r["pico_p80"].append(_percentil(picos, PERCENTIL_EXIGENTE))
+        r["termico"].append(sum(cresc["termico"][i] for i in dias_m) / len(dias_m))
+        r["agua"].append(sum(cresc["agua"][i] for i in dias_m) / len(dias_m))
+        for e in r["gd"]:
+            r["gd"][e].append(sum(cresc["gd"][e][i] for i in dias_m) / len(dias_m))
+    r["anos"] = (anos[0], anos[-1])
+    r["pesos"] = cresc["pesos"]
+    return r
+
+
+def clima_mensal(serie: dict) -> dict:
+    """Médias mensais da série (mínima, máxima, chuva do mês), só para exibir."""
+    inicio = _data_inicio(serie)
+    soma = {m: {"tmin": 0.0, "tmax": 0.0, "n": 0, "chuva": 0.0} for m in range(12)}
+    anos = set()
+    for i, (tmin, tmax, chuva) in enumerate(zip(serie["tmin"], serie["tmax"], serie["chuva"])):
+        d = inicio + timedelta(days=i)
+        s = soma[d.month - 1]
+        s["tmin"] += tmin
+        s["tmax"] += tmax
+        s["chuva"] += chuva
+        s["n"] += 1
+        anos.add(d.year)
+    return {"tmin": [soma[m]["tmin"] / soma[m]["n"] for m in range(12)],
+            "tmax": [soma[m]["tmax"] / soma[m]["n"] for m in range(12)],
+            "chuva_mm": [soma[m]["chuva"] / len(anos) for m in range(12)]}
+
+
+def custo_divisao(taxas: list[float], alto: list[int]) -> float:
+    """Equipes × dias (relativo) de uma divisão em 2 períodos, cada um com equipe
+    dimensionada pelo seu mês de maior demanda."""
+    baixo = [i for i in range(12) if i not in alto]
+    return sum(max(taxas[i] for i in idx) * sum(DIAS_MES[i] for i in idx) for idx in (alto, baixo) if idx)
+
+
+def _blocos(n_meses: int) -> list[list[int]]:
+    return [sorted((s + k) % 12 for k in range(n_meses)) for s in range(12)]
+
+
+def _eh_periodo_alto(taxas: list[float], bloco: list[int]) -> bool:
+    resto = [i for i in range(12) if i not in bloco]
+    return max(taxas[i] for i in bloco) >= max(taxas[i] for i in resto)
+
+
+def escolher_periodos(taxas: list[float], n_meses: int = 6) -> list[int]:
+    """Meses (0-11) do período de chuva: os `n_meses` consecutivos que, com o resto do
+    ano como seca, exigem MENOS equipe (cada período dimensionado pelo seu pico).
+    Não são "os meses de maior crescimento somado": o solo demora a recarregar
+    (outubro ainda é lento em SP) e segura água no fim das águas (abril ainda é
+    rápido). Pela soma, abril ia para a seca e a seca saía quase igual à chuva."""
+    n_meses = max(1, min(11, int(n_meses)))
+    candidatos = [b for b in _blocos(n_meses) if _eh_periodo_alto(taxas, b)] or _blocos(n_meses)
+    return min(candidatos, key=lambda b: (round(custo_divisao(taxas, b), 9), -sum(taxas[i] for i in b)))
+
+
+def divisao_otima_livre(taxas: list[float]) -> list[int]:
+    """Período de chuva da divisão em 2 blocos contíguos, de qualquer duração (2 a 10
+    meses), que exige menos equipe. Só informativa: o contrato usa 6 + 6."""
+    melhor = min((b for n in range(2, 11) for b in _blocos(n)), key=lambda b: (round(custo_divisao(taxas, b), 9), len(b)))
+    return melhor if _eh_periodo_alto(taxas, melhor) else [i for i in range(12) if i not in melhor]
+
+
+def rotulo_meses(idx: list[int]) -> str:
+    """'Nov–Abr' para um bloco contíguo (que pode virar o ano)."""
+    if not idx:
+        return "—"
+    inicio = [i for i in idx if (i - 1) % 12 not in idx]
+    if len(inicio) != 1:
+        return ", ".join(MESES[i] for i in sorted(idx))
+    return f"{MESES[inicio[0]]}–{MESES[(inicio[0] + len(idx) - 1) % 12]}"

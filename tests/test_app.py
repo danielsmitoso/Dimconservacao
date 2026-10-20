@@ -94,11 +94,73 @@ def test_modelo_crescimento_todos_estados():
         taxas = c.taxa_mensal(clima, {c.ESPECIE_PADRAO: 100})
         alto = c.meses_crescimento_alto(taxas)
         baixo = [i for i in range(12) if i not in alto]
-        assert alto and baixo, uf
+        assert len(alto) == pp.MESES_CHUVA_PADRAO == 6 and len(baixo) == 6, uf  # padrão 6 + 6
+        assert sum((m + 1) % 12 not in alto for m in alto) == 1, uf  # meses consecutivos (um bloco só)
+        assert len(c.meses_crescimento_alto(taxas, 7)) == 7, uf
         res = c.ciclos_periodo(taxas, alto, 30, 4)
         assert res["ciclos"] > 0, uf
         # altura máxima maior -> menos ciclos
         assert c.ciclos_periodo(taxas, alto, 50, 4)["ciclos"] < res["ciclos"], uf
+
+
+def test_modelo_v2_todos_estados():
+    """Modelo diário (2026-10-20): 27 estados com série embutida; 6 + 6 em bloco único
+    escolhido pela demanda; seca com pico menor que a chuva; ano exigente >= típico."""
+    from modules import crescimento as c
+    for uf in c.CLIMA_UF:
+        r = c.resumo_mensal(c.crescimento_diario(c.serie_uf(uf), {c.ESPECIE_PADRAO: 100}))
+        alto = c.escolher_periodos(r["pico"], 6)
+        baixo = [i for i in range(12) if i not in alto]
+        assert len(alto) == 6 and sum((m + 1) % 12 not in alto for m in alto) == 1, uf
+        assert max(r["pico"][i] for i in alto) >= max(r["pico"][i] for i in baixo), uf
+        assert all(p8 >= p - 1e-9 for p8, p in zip(r["pico_p80"], r["pico"])), uf
+        assert all(p >= m - 1e-9 for p, m in zip(r["pico"], r["media"])), uf  # pico de 30 dias >= média do mês
+        assert c.ciclos_periodo(r["pico"], alto, 30, 4)["ciclos"] > 0, uf
+        livre = c.divisao_otima_livre(r["pico"])
+        assert c.custo_divisao(r["pico"], livre) <= c.custo_divisao(r["pico"], alto) + 1e-9, uf
+
+
+def test_modelo_v2_sp_enxerga_a_seca():
+    """SP (Campinas): o v1 dava água ~100% em julho; o diário mostra o inverno seco, a
+    chuva pela demanda é nov–abr e a seca exige bem menos ciclos que a chuva."""
+    from modules import crescimento as c
+    r = c.resumo_mensal(c.crescimento_diario(c.serie_uf("SP"), {c.ESPECIE_PADRAO: 100}))
+    assert max(r["agua"][6:9]) < 0.6  # jul-set
+    alto = c.escolher_periodos(r["pico"], 6)
+    assert c.rotulo_meses(alto) == "Nov–Abr", c.rotulo_meses(alto)
+    baixo = [i for i in range(12) if i not in alto]
+    ch = c.ciclos_periodo(r["pico"], alto, 30, 4)["ciclos"]
+    se = c.ciclos_periodo(r["pico"], baixo, 30, 4)["ciclos"]
+    assert 1.2 < ch / se < 2.5, (ch, se)
+
+
+def test_modelo_v2_combina_pontos():
+    """Vários pontos: a curva combinada é a média diária ponderada; o pico combinado
+    não passa da média ponderada dos picos; um ponto só devolve ele mesmo."""
+    from modules import crescimento as c
+    comp = {c.ESPECIE_PADRAO: 100}
+    sp = c.crescimento_diario(c.serie_uf("SP"), comp)
+    go = c.crescimento_diario(c.serie_uf("GO"), comp)
+    assert c.combinar([(100, sp)]) is sp
+    comb = c.combinar([(70, sp), (30, go)])
+    assert abs(comb["taxa"][500] - (0.7 * sp["taxa"][500] + 0.3 * go["taxa"][500])) < 1e-12
+    r_sp, r_go, r_c = (c.resumo_mensal(x) for x in (sp, go, comb))
+    for m in range(12):
+        assert r_c["pico"][m] <= 0.7 * r_sp["pico"][m] + 0.3 * r_go["pico"][m] + 1e-9, m
+
+
+def test_memoria_v2_bate_com_termico():
+    """A memória (graus-dia de cada espécie × k × cobertura) soma o crescimento térmico do mês."""
+    from modules import crescimento as c
+    comp = {"Braquiarão Marandu (Urochloa brizantha)": 60, "Colonião / Mombaça / Tanzânia (Megathyrsus maximus)": 40}
+    r = c.resumo_mensal(c.crescimento_diario(c.serie_uf("MG"), comp))
+    for m in range(12):
+        soma = sum(p * c.ESPECIES[e]["k"] * r["gd"][e][m] for e, p in r["pesos"].items())
+        assert abs(soma - r["termico"][m]) < 1e-9, m
+    base = r["media"]
+    altura = 4 + 0.6 * c.crescimento_acumulado(base, 10, 60)
+    fator = c.fator_calibracao([{"mes": 10, "dias": 60, "altura_cm": altura}], None, comp, c.SOLO_PADRAO, 4, base=base)
+    assert abs(fator - 0.6) < 1e-9
 
 
 def test_calibracao_integra_os_dias():
@@ -235,6 +297,7 @@ def test_aba_vegetacao_aplica_ciclos_na_rocada():
         for chave, valor in aplicado.items():
             assert at.session_state[f"{pre}_{chave}"] == valor, f"{pre}_{chave}"
     assert aplicado["mc"] + aplicado["ms"] == 12
+    assert aplicado["mc"] == pp.MESES_CHUVA_PADRAO == 6
     assert any("Vegetação e Clima —" in c.value for c in at.caption), "legenda de origem dos ciclos ausente"
 
 
@@ -283,6 +346,20 @@ def test_contratado_sobrevive_troca_de_modo():
         at.radio(key=f"esp_modo_{nome}").set_value(opcao).run()
         assert not at.exception, at.exception
         assert at.session_state[f"contr_{nome}"] == 42, opcao
+
+
+def test_padrao_seis_mais_seis():
+    """Padrão 6 meses de chuva + 6 de seca em todas as atividades e nas abas de roçada (2026-10-20)."""
+    for grupo in (pp.FULL_SERVICE_ATIVIDADES, pp.ESPECIALISTAS_ATIVIDADES):
+        for nome, cfg in grupo.items():
+            if cfg.get("modo") == "anual":
+                assert cfg["meses_janela"] == pp.JANELAS_EXECUCAO[cfg["janela"]], nome
+            elif cfg["meses_chuva"] != 12:  # NC: 1 ciclo em 12 meses (volume anual)
+                assert (cfg["meses_chuva"], cfg["meses_seca"]) == (6, 6), nome
+    at = _app_com_exemplo()
+    for pre in ("man", "mec"):
+        assert (at.session_state[f"{pre}_mc"], at.session_state[f"{pre}_ms"]) == (6, 6), pre
+    assert len(at.session_state["veg_meses_alto"]) == 6
 
 
 def test_rocada_manual_tres_contagens():

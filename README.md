@@ -89,23 +89,34 @@ Para fechar: volte no PowerShell e aperte `Ctrl+C`.
      ou, onde não vem, área ÷ comprimento do polígono (é a mesma conta). Eixo-zero, braço
      articulado e Spider não mudam: foram indicados por restrição de acesso.
 2. **Aba Vegetação e Clima** (opcional, recomendada): estima os **ciclos de roçada pelo
-   crescimento da vegetação**. Informe a altura máxima do contrato (30 cm, 50 cm ou outra),
-   a altura pós-corte (3–5 cm), o solo, o estado (clima de referência já embutido para os
-   27 estados, ponto da capital; em SP, Campinas; não precisa de internet) ou a coordenada do trecho (consulta gratuita à
-   NASA POWER — envia só a coordenada) e as espécies predominantes com a % de cobertura.
-   A água disponível de cada mês vem de um **balanço hídrico** (chuva − evaporação, com a
-   água que o solo guarda de um mês para o outro; o solo escolhido define quanto ele guarda).
-   O app mostra o crescimento mês a mês, quantos dias a vegetação leva para chegar à
-   altura máxima (prazo máximo para a equipe percorrer o trecho e voltar) e os ciclos de
-   chuva e seca, indicando qual mês de cada período define os ciclos (o de crescimento
-   mais rápido). Com medições de campo (dias desde a roçada + altura medida), o modelo é
-   calibrado — o app compara com o crescimento previsto para todos os dias desde a roçada,
-   mesmo que eles cubram mais de um mês, e mostra a conta de cada medição. A **memória de
-   cálculo** (crescimento térmico de cada espécie × água disponível × fator de calibração →
-   cm/dia → dias até a altura máxima → ciclos) aparece na tela e vai para o Excel. O botão **"Usar estes ciclos..."** preenche as abas de roçada.
+   crescimento da vegetação**, só pela taxa de crescimento (sem margem operacional). Informe
+   a altura máxima do contrato (30 cm, 50 cm ou outra), a altura pós-corte (3–5 cm), o solo,
+   o clima e as espécies predominantes com a % de cobertura (a espécie é o que mais muda o
+   resultado: colonião cresce cerca de 1,5 vez a vegetação mista).
+   - **Clima:** 14 anos de dados **diários** (NASA POWER, 2011–2024) já embutidos para o
+     ponto de referência dos 27 estados (em SP, Campinas), sem precisar de internet. Ou
+     **um ou mais pontos do trecho** por coordenada (consulta gratuita à NASA POWER, que
+     envia só a coordenada), cada um com o **peso** (a % da área verde ou da extensão que
+     representa). Concessão longa, que passa por climas diferentes: um ponto por região. O
+     crescimento de cada dia é a média ponderada dos pontos e o pico sai dessa curva
+     combinada, porque as regiões não chegam ao pico no mesmo dia. Se cada região tiver equipe
+     própria, calcule uma região por vez.
+   - **Conta, dia a dia:** graus-dia de cada espécie pela mínima e máxima do dia (método de
+     Ometto) × água disponível de um **balanço hídrico diário** (evaporação de
+     Hargreaves-Samani; o solo guarda a água de um dia para o outro). O que dimensiona é o
+     **pico de 30 dias** de cada período, no **ano típico** (média) ou no **ano exigente**
+     (percentil 80 entre os anos).
+   - **Períodos:** **6 meses de chuva e 6 de seca** (ajustável). O app sugere os meses que,
+     separados, **exigem menos equipe**, e não simplesmente os de maior crescimento: o solo
+     demora a recarregar no começo das chuvas e segura água no fim. Em SP fica nov–abr. Se
+     outra divisão exigir menos equipe naquele clima, o app avisa (só como informação).
+   - Um gráfico mostra os **ciclos que cada mês exige**; ao lado, uma tabela com mínima,
+     máxima, chuva, água disponível, crescimento médio e pico. Com medições de campo (dias
+     desde a roçada + altura medida), o modelo é calibrado. A **memória de cálculo** aparece
+     na tela e vai para o Excel. O botão **"Usar estes ciclos..."** preenche as abas de roçada.
 3. **Aba Roçada Manual**: escolha *Metas de performance* ou *Personalizado*, ajuste ciclos
-   e meses (chuva/seca). **Ciclos são contados dentro de cada período** (ex.: 10 ciclos nos
-   7 meses de chuva), não por ano. A **proposta de divisão de equipes** enche cada equipe até a
+   e meses (chuva/seca; padrão 6 + 6 em todas as abas). **Ciclos são contados dentro de cada
+   período** (ex.: 10 ciclos nos 6 meses de chuva), não por ano. A **proposta de divisão de equipes** enche cada equipe até a
    capacidade do ciclo, na ordem dos km, cortando o trecho onde a capacidade acaba —
    só a última equipe pode ter folga. Dá para aceitar uma ocupação máxima acima de 100%
    e impedir que uma equipe atravesse de uma rodovia para outra. Em **"Ver por trecho"**,
@@ -166,7 +177,7 @@ modules/
   inventario.py               # leitura/validação da planilha de inventário
   quasar.py                   # leitura, auditoria e agregação do export Quasar (satélite)
   mecanizacao.py              # equipamento por trecho, frota mecanizada
-  crescimento.py              # modelo de crescimento da vegetação -> ciclos (clima dos 27 estados embutido)
+  crescimento.py              # modelo de crescimento da vegetação -> ciclos (diário, vários pontos de clima)
   export_excel.py             # memória de cálculo em Excel (fórmulas)
   export_pptx.py              # geração do relatório executivo em PowerPoint
 tests/
@@ -177,6 +188,7 @@ retroanalises/
   melhorias_propostas.md       # backlog vivo de melhorias de produto
 assets/                        # logo Motiva (branca/roxa), usada no app e no PPTX
 dados_exemplo/                 # planilhas de exemplo (fictícias)
+dados_clima/                   # clima diário 2011-2024 dos 27 estados (NASA POWER, público, ~460 KB)
 dados_quasar/                  # exports Quasar reais (dado sensível — no .gitignore)
 requirements.txt               # dependências Python
 ```
@@ -220,7 +232,7 @@ não é automatizável. Passo a passo:
    >   automaticamente.
    > - **Pelo site:** arraste só as pastas/arquivos que devem ir (`app.py`,
    >   `README.md`, `requirements.txt`, `.gitignore`, `modules/`, `assets/`,
-   >   `dados_exemplo/`, `retroanalises/`) — **nunca** arraste `dados_quasar/`.
+   >   `dados_exemplo/`, `dados_clima/`, `retroanalises/`) — **nunca** arraste `dados_quasar/`.
    > Se algo sensível subir por engano, apagar o arquivo num novo commit NÃO
    > basta — ele continua acessível no histórico do Git. É preciso apagar e
    > recriar o repositório do zero.
@@ -270,8 +282,10 @@ desde a roçada; que a memória de cálculo do crescimento bate com o resultado;
 equipamentos alternativos não dividem a área; que a tabela de substituição elimina
 unidades parciais sem criar unidade nova; que a regra do Trator 4,70 respeita largura e
 bloqueio; que Aceiro/Drenagem fora usam ciclos por ano; que o quadro-resumo e os totais da
-Análise batem com o cálculo; e que o "Contratado" de EPS/defensa sobrevive à troca
+Análise batem com o cálculo; que o padrão é 6 meses de chuva + 6 de seca; e que o "Contratado" de EPS/defensa sobrevive à troca
 Preventivo/Reativo; que a roçada manual chega à Análise em três contagens; que a checagem
 do inventário acusa os erros típicos de planilha; e que o PowerPoint tem o slide de síntese
-e nenhum elemento fora do slide. Leva cerca de 1 minuto e termina com `17/17 testes passaram`.
+e nenhum elemento fora do slide; e que o modelo de crescimento diário funciona nos 27 estados, enxerga a
+seca de SP (chuva nov–abr), combina vários pontos de clima e fecha a memória de cálculo. Leva cerca de
+1 a 2 minutos e termina com `22/22 testes passaram`.
 Não exige instalar nada além do que já está no `requirements.txt`.

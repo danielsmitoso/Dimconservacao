@@ -128,15 +128,21 @@ def nome_alternativas(nomes) -> str:
 
 
 # --- Ciclos/ano sazonais (dimensionamento chuva x seca) ------------------
+# Divisao do ano usada na pratica: 6 meses de chuva e 6 de seca (usuario,
+# 2026-10-20; antes era 7 + 5). Vale para todas as atividades e para a aba
+# Vegetacao e Clima; cada campo continua editavel na tela.
+MESES_CHUVA_PADRAO = 6
+MESES_SECA_PADRAO = 12 - MESES_CHUVA_PADRAO
+
 CICLOS_PADRAO = {
-    "rocada": {"ciclos_chuva": 10, "meses_chuva": 7, "ciclos_seca": 5, "meses_seca": 5,
+    "rocada": {"ciclos_chuva": 10, "meses_chuva": MESES_CHUVA_PADRAO, "ciclos_seca": 5, "meses_seca": MESES_SECA_PADRAO,
                "fonte": "referencia (SPVias: chuva 10 ciclos / seca 5 ciclos)"},
 }
 
 # --- Atividades "Full Service" (RioSP FS 4.0) -----------------------------
 # unidade "km": extensao do trecho. meta = km atendidos por dia por equipe.
 # Janela de execucao das atividades em "ciclos por ano" -> meses padrao.
-JANELAS_EXECUCAO = {"Seca": 5, "Chuva": 7, "Ano todo": 12}
+JANELAS_EXECUCAO = {"Seca": MESES_SECA_PADRAO, "Chuva": MESES_CHUVA_PADRAO, "Ano todo": 12}
 
 FULL_SERVICE_ATIVIDADES = {
     # Aceiro e Drenagem fora: "ciclos por ano" (modo anual), nao chuva/seca --
@@ -144,69 +150,72 @@ FULL_SERVICE_ATIVIDADES = {
     # 2026-10-16). Cenario 2 = comparativo (ex.: 2 ciclos/ano).
     "Aceiro (com remocao de massa verde)": {
         "unidade": "km", "meta_dia": 2, "modo": "anual", "ciclos_ano": 1, "ciclos_ano_alt": 2,
-        "janela": "Seca", "meses_janela": 5,
+        "janela": "Seca", "meses_janela": MESES_SECA_PADRAO,
         "fonte": "ciclos: contratos Artesp (1 ciclo/ano, na seca); meta/dia: estimativa (a validar)",
     },
     "Drenagem de plataforma": {
-        "unidade": "km", "meta_dia": 5, "ciclos_chuva": 4, "meses_chuva": 7,
-        "ciclos_seca": 4, "meses_seca": 5, "fonte": "estimativa (a validar)",
+        "unidade": "km", "meta_dia": 5, "ciclos_chuva": 4, "meses_chuva": MESES_CHUVA_PADRAO,
+        "ciclos_seca": 4, "meses_seca": MESES_SECA_PADRAO, "fonte": "estimativa (a validar)",
     },
     "Drenagem fora de plataforma": {
         "unidade": "km", "meta_dia": 2, "modo": "anual", "ciclos_ano": 1, "ciclos_ano_alt": 2,
-        "janela": "Seca", "meses_janela": 5,
+        "janela": "Seca", "meses_janela": MESES_SECA_PADRAO,
         "fonte": "ciclos: contratos Artesp (1 ciclo/ano, na seca) -- equivale ao RioSP FS4.0 "
                  "(1/4 do segmento por ciclo x 4 ciclos = 1 passada completa/ano); meta/dia: estimativa (a validar)",
     },
     "Capina": {
-        "unidade": "km", "meta_dia": 5, "ciclos_chuva": 6, "meses_chuva": 7,
-        "ciclos_seca": 2, "meses_seca": 5, "fonte": "estimativa (a validar)",
+        "unidade": "km", "meta_dia": 5, "ciclos_chuva": 6, "meses_chuva": MESES_CHUVA_PADRAO,
+        "ciclos_seca": 2, "meses_seca": MESES_SECA_PADRAO, "fonte": "estimativa (a validar)",
     },
     "Refilamento": {
-        "unidade": "km", "meta_dia": 5, "ciclos_chuva": 4, "meses_chuva": 7,
-        "ciclos_seca": 2, "meses_seca": 5, "fonte": "estimativa (a validar)",
+        "unidade": "km", "meta_dia": 5, "ciclos_chuva": 4, "meses_chuva": MESES_CHUVA_PADRAO,
+        "ciclos_seca": 2, "meses_seca": MESES_SECA_PADRAO, "fonte": "estimativa (a validar)",
     },
     "Calcada": {
-        "unidade": "m2", "meta_dia": 3000, "ciclos_chuva": 4, "meses_chuva": 7,
-        "ciclos_seca": 4, "meses_seca": 5, "fonte": "estimativa (a validar)",
+        "unidade": "m2", "meta_dia": 3000, "ciclos_chuva": 4, "meses_chuva": MESES_CHUVA_PADRAO,
+        "ciclos_seca": 4, "meses_seca": MESES_SECA_PADRAO, "fonte": "estimativa (a validar)",
     },
     "Lavagem de placas / catadioptricos": {
-        "unidade": "un", "meta_dia": 15, "ciclos_chuva": 1, "meses_chuva": 7,
-        "ciclos_seca": 1, "meses_seca": 5,
+        "unidade": "un", "meta_dia": 15, "ciclos_chuva": 1, "meses_chuva": MESES_CHUVA_PADRAO,
+        "ciclos_seca": 1, "meses_seca": MESES_SECA_PADRAO,
         "fonte": "referencia (RioSP FS4.0: 15-16 placas/dia, 2 ciclos/ano no total)",
     },
     "Remocao de lixo": {
-        "unidade": "km", "meta_dia": 5, "ciclos_chuva": 12, "meses_chuva": 7,
-        "ciclos_seca": 12, "meses_seca": 5, "fonte": "estimativa (a validar)",
+        "unidade": "km", "meta_dia": 5, "ciclos_chuva": 12, "meses_chuva": MESES_CHUVA_PADRAO,
+        "ciclos_seca": 12, "meses_seca": MESES_SECA_PADRAO, "fonte": "estimativa (a validar)",
     },
 }
 
 # --- Equipes especialistas -------------------------------------------------
 ESPECIALISTAS_ATIVIDADES = {
     "Limpeza / lavagem de EPS e barreira": {
-        "unidade": "m", "meta_dia": 500, "ciclos_chuva": 2, "meses_chuva": 7,
-        "ciclos_seca": 2, "meses_seca": 5, "fonte": "estimativa (a validar)",
+        "unidade": "m", "meta_dia": 500, "ciclos_chuva": 2, "meses_chuva": MESES_CHUVA_PADRAO,
+        "ciclos_seca": 2, "meses_seca": MESES_SECA_PADRAO, "fonte": "estimativa (a validar)",
         # Modo reativo (ver retroanalises/perguntas_pendentes.md item 7): em vez de
         # varredura ciclica, dimensiona por taxa de acionamentos/km/ano x
         # atendimento/dia por equipe -- mesmo padrao ja usado pela NC.
         "meta_dia_reativo": 2.0, "fonte_reativo": "estimativa (a validar)",
     },
     "Manutencao de defensa metalica": {
-        "unidade": "m", "meta_dia": 400, "ciclos_chuva": 1, "meses_chuva": 7,
-        "ciclos_seca": 1, "meses_seca": 5, "fonte": "estimativa (a validar)",
+        "unidade": "m", "meta_dia": 400, "ciclos_chuva": 1, "meses_chuva": MESES_CHUVA_PADRAO,
+        "ciclos_seca": 1, "meses_seca": MESES_SECA_PADRAO, "fonte": "estimativa (a validar)",
         "meta_dia_reativo": 1.5, "fonte_reativo": "estimativa (a validar)",
     },
     "Atendimento a Nao Conformidades (NC)": {
         "unidade": "NC", "meta_dia": 1.6, "ciclos_chuva": 1, "meses_chuva": 12,
         "ciclos_seca": 1, "meses_seca": 12,
         "fonte": "referencia (AutoBAn: 35,5 NC/equipe/mes = ~1,6 NC/dia)",
+        # 1 ciclo em 12 meses: a quantidade e o volume ANUAL de NCs.
+        "ajuda_qtd": "Volume ANUAL de NCs do contrato (1 ciclo em 12 meses). Se você tem o volume mensal, "
+                     "multiplique por 12 -- digitar o mensal subdimensiona as equipes em 12 vezes.",
     },
     "Varricao": {
-        "unidade": "km", "meta_dia": 8, "ciclos_chuva": 24, "meses_chuva": 7,
-        "ciclos_seca": 24, "meses_seca": 5, "fonte": "estimativa (a validar)",
+        "unidade": "km", "meta_dia": 8, "ciclos_chuva": 24, "meses_chuva": MESES_CHUVA_PADRAO,
+        "ciclos_seca": 24, "meses_seca": MESES_SECA_PADRAO, "fonte": "estimativa (a validar)",
     },
     "Poda de arvore": {
-        "unidade": "un", "meta_dia": 5, "ciclos_chuva": 1, "meses_chuva": 7,
-        "ciclos_seca": 1, "meses_seca": 5, "fonte": "estimativa (a validar)",
+        "unidade": "un", "meta_dia": 5, "ciclos_chuva": 1, "meses_chuva": MESES_CHUVA_PADRAO,
+        "ciclos_seca": 1, "meses_seca": MESES_SECA_PADRAO, "fonte": "estimativa (a validar)",
     },
 }
 
@@ -234,7 +243,7 @@ COLUNA_INVENTARIO_POR_ATIVIDADE = {
     "Remocao de lixo": "extensao_km",
     "Limpeza / lavagem de EPS e barreira": "eps_barreira_m",
     "Manutencao de defensa metalica": "defensa_m",
-    "Atendimento a Nao Conformidades (NC)": None,  # nao vem do inventario, e informado manualmente (volume mensal de NCs do contrato)
+    "Atendimento a Nao Conformidades (NC)": None,  # nao vem do inventario, e informado manualmente (volume ANUAL de NCs do contrato)
     "Varricao": "extensao_km",
     "Poda de arvore": None,  # informado manualmente (nao ha coluna padrao no inventario minimo)
 }
