@@ -308,6 +308,59 @@ with col_status:
         st.caption("Informe a unidade ao lado para que ela conste nos relatórios exportados.")
 nome_unidade = unidade_avaliada or "Unidade não informada"
 
+
+def mostrar_quadro_resumo(local, linhas: list, rotulos_cenario: tuple):
+    """Quadro-resumo no topo das abas Full Service/Especialistas (backlog item 58).
+    `local` é um st.container() criado no topo da aba e preenchido depois do laço das
+    atividades, para mostrar os valores já editados sem abrir cada expansor.
+    Cada linha: dict com atividade, quantidade, unidade, origem, chuva, seca, pico, fonte."""
+    if not linhas:
+        return
+    with local:
+        estimadas = [l for l in linhas if "estimativa" in l["fonte"].lower()]
+        zeradas = [l for l in linhas if l["quantidade"] <= 0]
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Equipes no pico (soma)", sum(l["pico"] for l in linhas))
+        m2.metric("Atividades com parâmetro estimado", f"{len(estimadas)} de {len(linhas)}",
+                  help="Meta/dia com fonte 'estimativa (a validar)': sem lastro em dado de campo.")
+        m3.metric("Atividades com quantidade zero", len(zeradas))
+        st.dataframe(
+            pd.DataFrame([{
+                "Atividade": l["atividade"],
+                "Quantidade": f"{l['quantidade']:,.1f} {l['unidade']}",
+                "Origem": l["origem"] if l["quantidade"] > 0 else "Sem dado",
+                f"Equipes — {rotulos_cenario[0]}": l["chuva"],
+                f"Equipes — {rotulos_cenario[1]}": l["seca"],
+                "Pico": l["pico"],
+                "Parâmetro": "⚠️ estimativa" if "estimativa" in l["fonte"].lower() else "referência",
+            } for l in linhas]),
+            hide_index=True, width="stretch",
+        )
+        st.caption("Resumo do que está preenchido abaixo. Abra a atividade para ajustar quantidade, meta e ciclos.")
+
+
+def mostrar_totais_analise(local, linhas: list, totais: dict):
+    """Consolidado no topo da Análise de Contrato (backlog item 59): contagem por status
+    e total dimensionado × contratado por unidade (roçador, unidade de equipamento e
+    equipe não se somam entre si)."""
+    with local:
+        n_deficit = sum(1 for l in linhas if l[3].startswith("⚠️"))
+        n_conforme = sum(1 for l in linhas if l[3].startswith("✅"))
+        n_excedente = sum(1 for l in linhas if l[3].startswith("ℹ️"))
+        m1, m2, m3 = st.columns(3)
+        m1.metric("⚠️ Em déficit", n_deficit)
+        m2.metric("✅ Conformes", n_conforme)
+        m3.metric("ℹ️ Excedentes", n_excedente)
+        colunas = st.columns(max(len(totais), 1))
+        for col, (unidade, (dimensionado, contratado)) in zip(colunas, totais.items()):
+            delta = contratado - dimensionado
+            col.metric(f"Total contratado ({unidade})", contratado, delta=f"{delta:+d}" if delta else None)
+            col.caption(f"Dimensionado: {dimensionado} {unidade}")
+        st.caption("Totais separados por unidade: roçadores, unidades de equipamento e equipes não se somam. "
+                   "Um excedente numa atividade não compensa o déficit de outra.")
+        st.divider()
+
+
 aba_inv, aba_veg, aba_manual, aba_mec, aba_fs, aba_esp, aba_analise, aba_export = st.tabs(
     ["📋 Inventário", "🌿 Vegetação e Clima", "👷 Roçada Manual", "🚜 Roçada Mecanizada", "📦 Full Service",
      "🛠️ Especialistas", "📊 Análise de Contrato", "📤 Exportar Relatório"]
@@ -389,6 +442,7 @@ with aba_inv:
     origem = st.session_state.get("origem_inv")
 
     df_inv = None
+    df_bruto_inv = None  # planilha como veio do arquivo: a checagem procura texto em campo numérico
     try:
         if origem == "exemplo":
             df_inv = inv.gerar_inventario_exemplo()
@@ -400,6 +454,7 @@ with aba_inv:
                 st.error(f"Faltam colunas obrigatórias na planilha: {', '.join(faltando)}")
             else:
                 df_inv = inv.preparar_inventario(df_bruto)
+                df_bruto_inv = df_bruto
                 st.success(f"Inventário carregado da planilha: {len(df_inv)} trechos.")
         elif origem == "quasar" and arquivo_quasar is not None:
             poligonos = ler_quasar(arquivo_quasar.getvalue(), quasar.VERSAO)
@@ -447,6 +502,23 @@ with aba_inv:
                 cm1, cm2 = st.columns(2)
                 cm1.metric("% Manual", f"{100 * area_manual_total / area_soma:.1f}%")
                 cm2.metric("% Mecanizada", f"{100 * area_mec_total / area_soma:.1f}%")
+
+        # Checagem de qualidade (backlog item 65): avisa, não bloqueia.
+        checagem = inv.checar_inventario(df_inv, df_bruto_inv)
+        if checagem.empty:
+            st.success("🔎 Checagem do inventário: nenhum problema encontrado (números, km, áreas, % manual + "
+                       "mecanizada e trechos repetidos ou sobrepostos).")
+        else:
+            n_atencao = int((checagem["Gravidade"] == inv.ATENCAO).sum())
+            n_linhas = checagem["Linha"].nunique()
+            (st.warning if n_atencao else st.info)(
+                f"🔎 Checagem do inventário: {len(checagem)} ponto(s) em {n_linhas} linha(s), {n_atencao} de atenção. "
+                "O cálculo segue com os valores como estão; corrija a planilha e envie de novo, se for o caso."
+            )
+            with st.expander("Ver os pontos da checagem", expanded=n_atencao > 0):
+                st.dataframe(checagem, width="stretch", hide_index=True)
+                st.caption("Linha = linha da planilha (o cabeçalho é a linha 1)." if df_bruto_inv is not None
+                           else "Linha = posição do trecho na tabela acima.")
     else:
         st.warning("Nenhum inventário carregado ainda.")
 
@@ -786,12 +858,19 @@ with aba_manual:
 
         df_trecho = colunas_trecho(df_inv)
         df_trecho["area_manual_m2"] = area_manual_trecho
-        df_trecho["colaboradores_estimados"] = df_trecho["area_manual_m2"].apply(
-            lambda a: dim.calcular_equipes(a, produtividade, pico_m.ciclos_periodo, pico_m.meses_periodo).equipes_arredondadas
+        # Fração sem arredondar: arredondar trecho a trecho e somar inflaria o total
+        # (ex.: 60 trechos × 0,3 roçador = 60 "roçadores", contra 18 no total).
+        df_trecho["roçadores (fração)"] = df_trecho["area_manual_m2"].apply(
+            lambda a: round(dim.calcular_equipes(a, produtividade, pico_m.ciclos_periodo, pico_m.meses_periodo).equipes_exatas, 2)
         )
 
-        with st.expander("Ver por trecho (colaboradores)"):
+        with st.expander("Ver por trecho (roçadores)"):
             st.dataframe(df_trecho, width="stretch", hide_index=True)
+            st.caption(
+                f"Quanto de um roçador cada trecho consome no cenário de pico, sem arredondar. A soma "
+                f"({df_trecho['roçadores (fração)'].sum():,.2f}) arredondada para cima dá o total acima "
+                f"({pico_m.equipes_arredondadas}). Não some valores arredondados por trecho: isso infla o total."
+            )
 
         st.markdown("### 👥 Proposta de divisão de equipes por trecho")
         cc1, cc2 = st.columns(2)
@@ -822,6 +901,28 @@ with aba_manual:
         )
         if df_div_m is not None:
             memoria_divisoes["Divisão Roçada Manual"] = df_div_m
+
+        # Três leituras do mesmo dimensionamento (pergunta 35): roçadores (o pico acima),
+        # equipes da divisão e colaboradores totais (roçadores + motorista/apoio).
+        n_equipes_m = len(grupos_m)
+        colaboradores_m = n_equipes_m * int(total_equipe)
+        st.session_state["resumo_rocada"]["Roçada Manual"].update({
+            "equipes_divisao": n_equipes_m, "colaboradores_totais": colaboradores_m,
+        })
+        st.markdown("#### 🧮 Roçada manual em três contagens")
+        t1, t2, t3 = st.columns(3)
+        t1.metric("Roçadores (pico)", pico_m.equipes_arredondadas)
+        t2.metric("Equipes", n_equipes_m)
+        t3.metric("Colaboradores totais", colaboradores_m)
+        st.caption(
+            f"Roçadores = quem roça, pelo cálculo de pico. Equipes = proposta de divisão acima. Colaboradores totais = "
+            f"{n_equipes_m} equipe(s) × {int(total_equipe)} ({int(rocadores_ativos)} roçando + "
+            f"{int(total_equipe - rocadores_ativos)} motorista/apoio). As três vão para a Análise de Contrato, para "
+            "comparar com o que o contrato prevê."
+            + (f" As equipes têm {n_equipes_m * int(rocadores_ativos)} vagas de roçador, contra "
+               f"{pico_m.equipes_arredondadas} necessárias: a diferença é a folga da última equipe ou da divisão por trecho."
+               if n_equipes_m * int(rocadores_ativos) > pico_m.equipes_arredondadas else "")
+        )
 
 # ---------------------------------------------------------------------------
 # ABA: Roçada Mecanizada
@@ -1082,7 +1183,9 @@ with aba_fs:
             "placas + remoção de lixo. A roçada é dimensionada nas abas Roçada Manual/Mecanizada — aqui ficam só "
             "as demais atividades do pacote."
         )
+        quadro_fs = st.container()
         linhas_relatorio = []
+        linhas_resumo = []
         sem_dado = []
         for nome_ativ, cfg in pp.FULL_SERVICE_ATIVIDADES.items():
             coluna = pp.COLUNA_INVENTARIO_POR_ATIVIDADE.get(nome_ativ)
@@ -1119,9 +1222,15 @@ with aba_fs:
                     resultado["chuva"].equipes_arredondadas, resultado["seca"].equipes_arredondadas,
                     resultado["pico"].equipes_arredondadas,
                 ])
+                origem = f"Inventário: coluna {coluna}" if tem_coluna and quantidade == quantidade_padrao else "Informada manualmente"
                 registrar("Full Service", nome_ativ, cfg["unidade"], "equipe(s)", quantidade,
-                          f"Inventário: coluna {coluna}" if tem_coluna and quantidade == quantidade_padrao else "Informada manualmente",
-                          meta, cchuva, mchuva, cseca, mseca, cfg["fonte"])
+                          origem, meta, cchuva, mchuva, cseca, mseca, cfg["fonte"])
+                linhas_resumo.append({
+                    "atividade": nome_ativ, "quantidade": quantidade, "unidade": cfg["unidade"],
+                    "origem": "Inventário" if origem.startswith("Inventário") else "Manual",
+                    "chuva": resultado["chuva"].equipes_arredondadas, "seca": resultado["seca"].equipes_arredondadas,
+                    "pico": resultado["pico"].equipes_arredondadas, "fonte": cfg["fonte"],
+                })
                 if quantidade <= 0:
                     sem_dado.append(nome_ativ)
         if sem_dado:
@@ -1132,6 +1241,7 @@ with aba_fs:
                 "expansor de cada uma e informe a quantidade manualmente, se aplicável a este contrato.",
                 icon="💡",
             )
+        mostrar_quadro_resumo(quadro_fs, linhas_resumo, ("Chuva", "Seca"))
         st.session_state["resultados_atividades"]["Full Service"] = linhas_relatorio
 
 # ---------------------------------------------------------------------------
@@ -1140,7 +1250,9 @@ with aba_fs:
 with aba_esp:
     st.subheader("Dimensionamento — Equipes Especialistas")
     st.caption("EPS/barreira, defensa metálica, NC, varrição e poda — geralmente fora do pacote Full Service.")
+    quadro_esp = st.container()
     linhas_relatorio = []
+    linhas_resumo = []
     sem_dado = []
     for nome_ativ, cfg in pp.ESPECIALISTAS_ATIVIDADES.items():
         coluna = pp.COLUNA_INVENTARIO_POR_ATIVIDADE.get(nome_ativ)
@@ -1157,6 +1269,8 @@ with aba_esp:
                 f"Quantidade ({cfg['unidade']}) — {'preenchido do inventário, ajuste se necessário' if coluna else 'não há coluna no inventário, informe manualmente'}",
                 min_value=0.0, key=f"esp_qtd_{nome_ativ}",
             )
+            if cfg.get("ajuda_qtd"):
+                st.caption(f"ℹ️ {cfg['ajuda_qtd']}")
 
             modo_reativo = False
             if nome_ativ in pp.ATIVIDADES_COM_MODO_REATIVO:
@@ -1196,6 +1310,13 @@ with aba_esp:
                 registrar("Especialistas", f"{nome_ativ} (reativo)", "acionamento(s)/ano", "equipe(s)", volume_anual,
                           f"Taxa de {taxa:g} acionamento(s)/km/ano × {extensao_km_ativ:,.1f} km do inventário",
                           meta_reativo, 1, 12, 1, 12, cfg.get("fonte_reativo", "estimativa (a validar)"))
+                linhas_resumo.append({
+                    "atividade": f"{nome_ativ} (reativo)", "quantidade": volume_anual, "unidade": "acionamento(s)/ano",
+                    "origem": f"Taxa × {extensao_km_ativ:,.1f} km",
+                    "chuva": resultado["chuva"].equipes_arredondadas, "seca": resultado["seca"].equipes_arredondadas,
+                    "pico": resultado["pico"].equipes_arredondadas,
+                    "fonte": cfg.get("fonte_reativo", "estimativa (a validar)"),
+                })
                 if coluna and quantidade <= 0:
                     sem_dado.append(nome_ativ)
             else:
@@ -1223,6 +1344,12 @@ with aba_esp:
                 registrar("Especialistas", nome_ativ, cfg["unidade"], "equipe(s)", quantidade,
                           f"Inventário: coluna {coluna}" if veio_do_inventario else "Informada manualmente",
                           meta, cchuva, mchuva, cseca, mseca, cfg["fonte"])
+                linhas_resumo.append({
+                    "atividade": nome_ativ, "quantidade": quantidade, "unidade": cfg["unidade"],
+                    "origem": "Inventário" if veio_do_inventario else "Manual",
+                    "chuva": resultado["chuva"].equipes_arredondadas, "seca": resultado["seca"].equipes_arredondadas,
+                    "pico": resultado["pico"].equipes_arredondadas, "fonte": cfg["fonte"],
+                })
                 if coluna and quantidade <= 0:
                     sem_dado.append(nome_ativ)
     if sem_dado:
@@ -1233,6 +1360,7 @@ with aba_esp:
             "expansor de cada uma e informe a quantidade manualmente, se aplicável a este contrato.",
             icon="💡",
         )
+    mostrar_quadro_resumo(quadro_esp, linhas_resumo, ("Cenário 1", "Cenário 2"))
     st.session_state["resultados_atividades"]["Especialistas"] = linhas_relatorio
 
 # ---------------------------------------------------------------------------
@@ -1242,15 +1370,20 @@ with aba_analise:
     titulo_analise = "Análise de Contrato — Dimensionado × Contratado"
     st.subheader(f"{titulo_analise} ({unidade_avaliada})" if unidade_avaliada else titulo_analise)
     st.caption("Informe quantas equipes/unidades o contrato atual prevê para cada atividade, para comparar com o dimensionamento.")
+    quadro_analise = st.container()
 
     todas_atividades = []
     for nome_r, r in st.session_state["resumo_rocada"].items():
         todas_atividades.append((nome_r, r["equipes_arredondadas"], r.get("unidade", "equipe(s)")))
+        if "equipes_divisao" in r:  # Roçada Manual: também equipes e colaboradores totais (pergunta 35)
+            todas_atividades.append((f"{nome_r} — equipes", r["equipes_divisao"], "equipe(s) de roçada"))
+            todas_atividades.append((f"{nome_r} — colaboradores totais", r["colaboradores_totais"], "colaborador(es)"))
     for grupo, linhas in st.session_state["resultados_atividades"].items():
         for linha in linhas:
             todas_atividades.append((linha[0], linha[-1], "equipe(s)"))  # (nome, equipes_pico, unidade)
 
     linhas_analise = []
+    totais_analise = {}  # unidade -> [dimensionado, contratado]: roçadores, equipamentos e equipes não se somam
     if not todas_atividades:
         st.warning("Calcule o dimensionamento nas abas anteriores primeiro.")
     else:
@@ -1261,8 +1394,10 @@ with aba_analise:
             # Nasce igual ao dimensionado e o acompanha até o usuário editar
             # (antes ficava congelado no 1º valor -- ex.: 0 antes do inventário --
             # e gerava "déficit de 100%" falso).
-            sincronizar_padrao(f"contr_{nome_ativ}", int(dimensionado))
-            contratado = col2.number_input("Contratado", min_value=0, key=f"contr_{nome_ativ}")
+            # Chave sem o sufixo do modo: o Contratado de EPS/defensa sobrevive à troca Preventivo/Reativo.
+            chave_contr = f"contr_{nome_ativ.removesuffix(' (reativo)')}"
+            sincronizar_padrao(chave_contr, int(dimensionado))
+            contratado = col2.number_input("Contratado", min_value=0, key=chave_contr)
             delta = contratado - dimensionado
             pct_desvio = 100 * abs(delta) / dimensionado if dimensionado else 0
             desvio = f" ({100 * delta / dimensionado:+.0f}%)" if dimensionado else ""
@@ -1283,7 +1418,12 @@ with aba_analise:
                 status = "✅ Conforme"
                 col3.success(status)
             linhas_analise.append([nome_ativ, dimensionado, contratado, status])
+            totais_unidade = totais_analise.setdefault(unidade, [0, 0])
+            totais_unidade[0] += dimensionado
+            totais_unidade[1] += contratado
+        mostrar_totais_analise(quadro_analise, linhas_analise, totais_analise)
     st.session_state["analise_contrato"] = linhas_analise
+    st.session_state["totais_analise"] = totais_analise
 
 # ---------------------------------------------------------------------------
 # ABA: Exportar Relatório
@@ -1344,6 +1484,7 @@ with aba_export:
     resumo_rocada_exp = st.session_state["resumo_rocada"]
     resultados_exp = st.session_state["resultados_atividades"]
     analise_exp = st.session_state.get("analise_contrato")
+    totais_exp = st.session_state.get("totais_analise")
 
     def _bytes_pptx():
         with tempfile.TemporaryDirectory() as tmp:
@@ -1352,7 +1493,7 @@ with aba_export:
                 caminho_saida=caminho, nome_contrato=nome_unidade,
                 resumo_rocada=resumo_rocada_exp,
                 resultados_atividades=resultados_exp,
-                analise_contrato=analise_exp,
+                analise_contrato=analise_exp, totais_analise=totais_exp,
             )
             return Path(caminho).read_bytes()
 

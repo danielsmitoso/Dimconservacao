@@ -75,6 +75,10 @@ Para fechar: volte no PowerShell e aperte `Ctrl+C`.
    `defensa_m`, `placas_qtd`, `bueiros_qtd`, `calcada_m2`, `aceiro_km`,
    `drenagem_plataforma_km`, `drenagem_fora_plataforma_km`. O botão "Usar inventário de
    exemplo" carrega dados fictícios para conhecer a ferramenta.
+   - **Checagem do inventário** (logo abaixo da tabela): aponta, com a linha da planilha,
+     texto em campo numérico (que viraria 0), área negativa ou zero, km inicial = final ou
+     invertido, `pct_manual + pct_mecanizada` diferente de 100, trecho repetido e km
+     sobreposto na mesma rodovia. Só avisa, não bloqueia: corrija a planilha e envie de novo.
    - **Auditoria do Quasar** (aparece depois de gerar o inventário): extensão física por
      rodovia, cobertura do mapeamento, lacunas, km com canteiro central, alertas. Confira
      antes de usar os números.
@@ -104,7 +108,11 @@ Para fechar: volte no PowerShell e aperte `Ctrl+C`.
    7 meses de chuva), não por ano. A **proposta de divisão de equipes** enche cada equipe até a
    capacidade do ciclo, na ordem dos km, cortando o trecho onde a capacidade acaba —
    só a última equipe pode ter folga. Dá para aceitar uma ocupação máxima acima de 100%
-   e impedir que uma equipe atravesse de uma rodovia para outra.
+   e impedir que uma equipe atravesse de uma rodovia para outra. Em **"Ver por trecho"**,
+   cada trecho mostra a **fração** de roçador que consome (sem arredondar): a soma, arredondada
+   para cima, dá o total da aba. O quadro **"Roçada manual em três contagens"** mostra
+   roçadores (pico), equipes (da divisão) e colaboradores totais (equipes × colaboradores
+   por equipe, com motorista/apoio). As três vão para a Análise de Contrato.
 4. **Aba Roçada Mecanizada**: a área mecanizada vai para o equipamento que o Quasar indica
    (Trator 4.7m, Trator 1.7m, Trator com braço articulado, Eixo-zero, Spider). Quando um
    polígono indica mais de um ("Trator 1.7m, Spider"), são **alternativas** — qualquer um faria
@@ -123,12 +131,23 @@ Para fechar: volte no PowerShell e aperte `Ctrl+C`.
    ciclos/ano), quando a atividade é feita (seca, chuva ou ano todo) e quantos meses dura
    a janela, e escolha o cenário que entra no dimensionamento. Fora da janela não há equipe
    alocada. As demais atividades seguem com ciclos por período de chuva e de seca.
-6. **Aba Especialistas**: EPS/barreira, defensa metálica, NC, varrição, poda.
+   No topo da aba, um **quadro-resumo** mostra todas as atividades de uma vez (quantidade,
+   origem, equipes por cenário e se o parâmetro é estimativa), sem abrir cada uma.
+6. **Aba Especialistas**: EPS/barreira, defensa metálica, NC, varrição, poda. Na **NC**,
+   informe o volume **anual** de não conformidades (se tiver o mensal, multiplique por 12).
+   Tem o mesmo quadro-resumo no topo.
 7. **Aba Análise de Contrato**: informe quantas equipes/unidades o contrato atual prevê por
-   atividade e veja déficit/excedente (com %).
+   atividade e veja déficit/excedente (com %). No topo aparecem quantas atividades estão em
+   déficit, conformes ou com excedente, e o total contratado × dimensionado, separado por
+   unidade (roçadores, unidades de equipamento e equipes não se somam). O valor digitado em
+   EPS/barreira e defensa é mantido ao alternar entre Preventivo e Reativo. A roçada manual
+   aparece em três linhas (roçadores, equipes e colaboradores totais), cada uma com seu
+   Contratado: compare pela que o contrato usa.
 8. **Aba Exportar Relatório**: baixe (a) o **PowerPoint executivo** e (b) a **memória de
    cálculo em Excel**, com premissas em azul e o cálculo passo a passo em fórmulas do
-   Excel, para conferir qualquer número.
+   Excel, para conferir qualquer número. O PowerPoint traz um slide de **síntese** antes da
+   tabela da Análise (déficits, conformes e excedentes; totais por unidade; maiores déficits)
+   e quebra tabelas longas em mais de um slide, para nada passar da página.
 
 > **Tudo se atualiza sozinho:** números e textos são recalculados a cada alteração, e os
 > arquivos para download são montados no momento do clique, com o estado atual da tela.
@@ -250,6 +269,9 @@ as abas de roçada; que a calibração por medição de campo considera todos os
 desde a roçada; que a memória de cálculo do crescimento bate com o resultado; e que
 equipamentos alternativos não dividem a área; que a tabela de substituição elimina
 unidades parciais sem criar unidade nova; que a regra do Trator 4,70 respeita largura e
-bloqueio; e que Aceiro/Drenagem fora usam ciclos por ano. Leva cerca de 1 minuto e termina
-com `12/12 testes passaram`.
+bloqueio; que Aceiro/Drenagem fora usam ciclos por ano; que o quadro-resumo e os totais da
+Análise batem com o cálculo; e que o "Contratado" de EPS/defensa sobrevive à troca
+Preventivo/Reativo; que a roçada manual chega à Análise em três contagens; que a checagem
+do inventário acusa os erros típicos de planilha; e que o PowerPoint tem o slide de síntese
+e nenhum elemento fora do slide. Leva cerca de 1 minuto e termina com `17/17 testes passaram`.
 Não exige instalar nada além do que já está no `requirements.txt`.

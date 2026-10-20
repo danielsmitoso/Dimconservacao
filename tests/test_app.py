@@ -238,6 +238,114 @@ def test_aba_vegetacao_aplica_ciclos_na_rocada():
     assert any("Vegetação e Clima —" in c.value for c in at.caption), "legenda de origem dos ciclos ausente"
 
 
+def test_quadro_resumo_e_totais_da_analise():
+    """Itens 58 e 59 (2026-10-19): o quadro-resumo de Full Service/Especialistas mostra
+    o valor editado (sem abrir o expansor) e a Análise de Contrato conta os déficits e
+    soma dimensionado × contratado por unidade."""
+    at = _app_com_exemplo()
+
+    def quadro(atividade):
+        return next(d.value for d in at.dataframe
+                    if "Pico" in d.value.columns and atividade in set(d.value["Atividade"]))
+
+    def metrica(rotulo):
+        return next(m for m in at.metric if m.label == rotulo)
+
+    for grupo, atividade in (("Full Service", "Capina"), ("Especialistas", "Varricao")):
+        df = quadro(atividade)
+        picos = {l[0]: l[5] for l in at.session_state["resultados_atividades"][grupo]}
+        assert dict(zip(df["Atividade"], df["Pico"])) == picos, grupo
+
+    chave = _chave_quantidade(at, "Capina")
+    at.number_input(key=chave).set_value(at.session_state[chave] * 20).run()
+    assert not at.exception, at.exception
+    novo = next(l[5] for l in at.session_state["resultados_atividades"]["Full Service"] if l[0] == "Capina")
+    df = quadro("Capina")
+    assert df.loc[df["Atividade"] == "Capina", "Pico"].item() == novo
+    assert df.loc[df["Atividade"] == "Capina", "Origem"].item() == "Manual"
+
+    assert metrica("⚠️ Em déficit").value == "0"
+    total_antes = int(metrica("Total contratado (equipe(s))").value)
+    at.number_input(key="contr_Capina").set_value(novo - 1).run()
+    assert not at.exception, at.exception
+    assert metrica("⚠️ Em déficit").value == "1"
+    assert int(metrica("Total contratado (equipe(s))").value) == total_antes - 1
+
+
+def test_contratado_sobrevive_troca_de_modo():
+    """Item 61: o Contratado de EPS/defensa não volta ao dimensionado ao alternar Preventivo/Reativo."""
+    at = _app_com_exemplo()
+    nome = sorted(pp.ATIVIDADES_COM_MODO_REATIVO)[0]
+    at.number_input(key=f"contr_{nome}").set_value(42).run()
+    assert not at.exception, at.exception
+    radio = at.radio(key=f"esp_modo_{nome}")
+    for opcao in (radio.options[1], radio.options[0]):
+        at.radio(key=f"esp_modo_{nome}").set_value(opcao).run()
+        assert not at.exception, at.exception
+        assert at.session_state[f"contr_{nome}"] == 42, opcao
+
+
+def test_rocada_manual_tres_contagens():
+    """Pergunta 35: roçadores, equipes e colaboradores totais chegam à Análise de Contrato."""
+    at = _app_com_exemplo()
+    r = at.session_state["resumo_rocada"]["Roçada Manual"]
+    total_equipe = at.session_state["comp_total_equipe"]
+    assert r["equipes_divisao"] >= 1
+    assert r["colaboradores_totais"] == r["equipes_divisao"] * total_equipe
+    assert r["equipes_divisao"] * at.session_state["comp_rocadores_ativos"] >= r["equipes_arredondadas"]
+    analise = {l[0]: l[1] for l in at.session_state["analise_contrato"]}
+    assert analise["Roçada Manual"] == r["equipes_arredondadas"]
+    assert analise["Roçada Manual — equipes"] == r["equipes_divisao"]
+    assert analise["Roçada Manual — colaboradores totais"] == r["colaboradores_totais"]
+    assert "colaborador(es)" in at.session_state["totais_analise"]
+
+
+def test_checagem_inventario():
+    """Item 65: a checagem acusa os erros típicos de planilha e não acusa o exemplo."""
+    import pandas as pd
+    assert inv.checar_inventario(inv.gerar_inventario_exemplo()).empty
+    bruto = pd.DataFrame([
+        {"trecho": "A", "rodovia": "SP-1", "km_inicial": 0, "km_final": 5, "area_verde_m2": "1.234,5",
+         "pct_manual": 60, "pct_mecanizada": 40},
+        {"trecho": "A", "rodovia": "SP-1", "km_inicial": 4, "km_final": 10, "area_verde_m2": 1000,
+         "pct_manual": 70, "pct_mecanizada": 40},
+        {"trecho": "C", "rodovia": "SP-2", "km_inicial": 3, "km_final": 3, "area_verde_m2": -5,
+         "pct_manual": 50, "pct_mecanizada": 50},
+    ])
+    r = inv.checar_inventario(inv.preparar_inventario(bruto), bruto)
+    texto = " | ".join(r["Problema"])
+    for trecho_esperado in ("não é número", "deveria ser 100%", "repetido", "se sobrepõe", "Extensão zero",
+                            "negativa"):
+        assert trecho_esperado in texto, trecho_esperado
+    assert r.iloc[0]["Gravidade"] == inv.ATENCAO  # atenção vem primeiro
+    assert set(r["Linha"]) == {2, 3, 4}  # linha da planilha (cabeçalho = 1)
+
+
+def test_pptx_sintese_e_paginacao():
+    """Item 62: slide de síntese antes da tabela da Análise, e nada passa do slide."""
+    import tempfile
+    from pptx import Presentation
+    from modules import export_pptx
+    analise = [[f"Atividade {i}", 4, 4 - (i % 3), "-"] for i in range(25)]
+    with tempfile.TemporaryDirectory() as tmp:
+        caminho = str(Path(tmp) / "r.pptx")
+        export_pptx.gerar_relatorio(caminho, "Teste", {"Roçada Manual": {
+            "equipes_arredondadas": 9, "cenario": "Chuva", "unidade": "roçador(es)",
+            "equipes_divisao": 3, "colaboradores_totais": 18}}, {}, analise, {"equipe(s)": [100, 75]})
+        prs = Presentation(caminho)
+    titulos = [next(s.text_frame.text.split("\n")[0] for s in sl.shapes if s.has_text_frame) for sl in prs.slides]
+    assert any(t.startswith("Síntese") for t in titulos), titulos
+    assert sum(t.startswith("Análise de Contrato") for t in titulos) == 3, titulos  # 25 linhas → 3 páginas
+    assert sum(t.startswith("Resumo — Roçada") for t in titulos) == 1, titulos  # sem slide vazio duplicado
+    for sl in list(prs.slides)[1:]:
+        assert len(list(sl.shapes)) > 2, "slide só com título e logo"
+    textos = " ".join(sh.text_frame.text for sl in prs.slides for sh in sl.shapes if sh.has_text_frame)
+    assert "Maiores déficits" in textos
+    for sl in prs.slides:
+        for sh in sl.shapes:
+            assert sh.top + sh.height <= prs.slide_height, (sh.name, sh.top + sh.height)
+
+
 if __name__ == "__main__":
     testes = [v for k, v in dict(globals()).items() if k.startswith("test_") and callable(v)]
     falhas = 0
