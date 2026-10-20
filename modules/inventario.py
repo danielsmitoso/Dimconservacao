@@ -255,6 +255,79 @@ def area_por_modalidade(df: pd.DataFrame, modalidade: str) -> pd.Series:
     return df["area_verde_m2"]
 
 
+ATENCAO = "⚠️ Atenção"
+CONFERIR = "ℹ️ Conferir"
+
+
+def checar_inventario(df: pd.DataFrame, df_bruto: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Checagem de qualidade do inventario (backlog item 65). Nao bloqueia o uso:
+    devolve uma linha por problema (Linha, Trecho, Gravidade, Problema), vazia se
+    estiver tudo certo. `df` e o inventario preparado; `df_bruto`, a planilha como
+    veio do arquivo (antes de converter para numero), para achar texto em campo
+    numerico -- preparar_inventario() o troca por 0 em silencio. Linha = linha da
+    planilha (cabecalho na 1) quando ha df_bruto; senao, a posicao do trecho."""
+    problemas = []
+    desloc = 2 if df_bruto is not None else 1
+
+    def _add(idx, gravidade, texto):
+        trecho = str(df.at[idx, "trecho"]) if idx in df.index and "trecho" in df.columns else ""
+        problemas.append({"Linha": int(idx) + desloc, "Trecho": trecho, "Gravidade": gravidade, "Problema": texto})
+
+    if df_bruto is not None:
+        numericas = [c for c in df_bruto.columns
+                     if (c in COLUNAS_MINIMAS + COLUNAS_OPCIONAIS and c not in COLUNAS_TEXTO)
+                     or str(c).startswith("mec_m2__")]
+        for c in numericas:
+            bruto = df_bruto[c]
+            preenchido = bruto.notna() & (bruto.astype(str).str.strip() != "")
+            invalido = preenchido & pd.to_numeric(bruto, errors="coerce").isna()
+            for idx in bruto.index[invalido]:
+                _add(idx, ATENCAO, f"'{bruto[idx]}' em {c} não é número: foi considerado 0 "
+                                   "(use só números, com ponto como decimal e sem separador de milhar, ou salve como .xlsx).")
+
+    for idx, linha in df.iterrows():
+        if linha.get("area_verde_m2", 0) < 0:
+            _add(idx, ATENCAO, "Área verde negativa.")
+        elif linha.get("area_verde_m2", 0) == 0:
+            _add(idx, CONFERIR, "Área verde zero: o trecho não entra na roçada.")
+        if linha.get("extensao_km", 0) <= 0:
+            _add(idx, ATENCAO, "Extensão zero (km inicial = km final).")
+        if df_bruto is not None and "extensao_km" not in df_bruto.columns \
+                and linha.get("km_final", 0) < linha.get("km_inicial", 0):
+            _add(idx, CONFERIR, "Km final menor que o inicial: a extensão foi tomada como a diferença absoluta.")
+        pcts = [c for c in ("pct_manual", "pct_mecanizada") if c in df.columns]
+        for c in pcts:
+            if not 0 <= linha[c] <= 100:
+                _add(idx, ATENCAO, f"{c} = {linha[c]:g}, fora de 0 a 100.")
+        if len(pcts) == 2 and linha.get("area_verde_m2", 0) > 0 \
+                and abs(linha["pct_manual"] + linha["pct_mecanizada"] - 100) > 1:
+            _add(idx, ATENCAO, f"pct_manual + pct_mecanizada = {linha['pct_manual'] + linha['pct_mecanizada']:g}% "
+                               "(deveria ser 100%): parte da área fica sem roçada ou é contada duas vezes.")
+
+    if "trecho" in df.columns:
+        for idx in df.index[df["trecho"].duplicated(keep="first")]:
+            _add(idx, ATENCAO, "Nome de trecho repetido: confira se a linha não foi lançada duas vezes.")
+
+    if {"km_inicial", "km_final"} <= set(df.columns):
+        grupos = df.groupby("rodovia") if "rodovia" in df.columns else [("", df)]
+        for _, g in grupos:
+            ini = g[["km_inicial", "km_final"]].min(axis=1)
+            fim = g[["km_inicial", "km_final"]].max(axis=1)
+            ordem = ini.sort_values().index
+            fim_anterior, idx_anterior = None, None
+            for idx in ordem:
+                if fim_anterior is not None and ini[idx] < fim_anterior - 1e-6:
+                    _add(idx, CONFERIR, f"Km se sobrepõe ao trecho '{df.at[idx_anterior, 'trecho']}' na mesma "
+                                        "rodovia: a área pode estar contada duas vezes.")
+                if fim_anterior is None or fim[idx] > fim_anterior:
+                    fim_anterior, idx_anterior = fim[idx], idx
+
+    colunas = ["Linha", "Trecho", "Gravidade", "Problema"]
+    resultado = pd.DataFrame(problemas, columns=colunas)
+    resultado["_ordem"] = (resultado["Gravidade"] != ATENCAO).astype(int)  # Atenção primeiro
+    return resultado.sort_values(["_ordem", "Linha"], kind="stable").drop(columns="_ordem").reset_index(drop=True)
+
+
 def gerar_inventario_exemplo() -> pd.DataFrame:
     """Planilha de inventario ficticia, so para demonstracao/piloto."""
     dados = [

@@ -111,12 +111,83 @@ def _tabela(slide, top, dados, larguras=None):
     return grafico
 
 
+VERMELHO = RGBColor(0xC0, 0x39, 0x2B)
+VERDE = RGBColor(0x2E, 0x7D, 0x32)
+MAX_LINHAS_TABELA = 12  # linhas de dados por slide: 13 × 0,4" a partir de 1,4" cabe com folga em 7,5"
+
+
+def _slides_tabela(prs, titulo, cabecalho, linhas, larguras):
+    """Uma tabela por slide, quebrada em páginas de até MAX_LINHAS_TABELA linhas
+    (regra do relatório: nada passa do slide nem se sobrepõe)."""
+    paginas = [linhas[i:i + MAX_LINHAS_TABELA] for i in range(0, len(linhas), MAX_LINHAS_TABELA)] or [[]]
+    for n, pagina in enumerate(paginas, start=1):
+        slide = _slide_em_branco(prs)
+        _titulo(slide, titulo + (f" ({n}/{len(paginas)})" if len(paginas) > 1 else ""))
+        if pagina:
+            _tabela(slide, Inches(1.4), [cabecalho] + pagina, larguras=larguras)
+
+
+def _cartao(slide, left, top, numero, rotulo, cor):
+    caixa = slide.shapes.add_shape(5, left, top, Inches(3.8), Inches(1.3))  # retângulo arredondado
+    caixa.fill.solid()
+    caixa.fill.fore_color.rgb = LAVANDA
+    caixa.line.fill.background()
+    caixa.shadow.inherit = False
+    tf = caixa.text_frame
+    tf.text = str(numero)
+    tf.paragraphs[0].font.size = Pt(36)
+    tf.paragraphs[0].font.bold = True
+    tf.paragraphs[0].font.color.rgb = cor
+    tf.paragraphs[0].alignment = PP_ALIGN.CENTER
+    p = tf.add_paragraph()
+    p.text = rotulo
+    p.font.size = Pt(14)
+    p.font.color.rgb = TINTA
+    p.alignment = PP_ALIGN.CENTER
+
+
+def _slide_sintese(prs, analise_contrato, totais_analise):
+    """Síntese da Análise de Contrato (backlog item 62): contagem por status, totais
+    por unidade e os maiores déficits, num slide próprio antes da tabela."""
+    slide = _slide_em_branco(prs)
+    _titulo(slide, "Síntese — Dimensionado × Contratado",
+            "Totais por unidade: roçadores, equipes e equipamentos não se somam entre si")
+    deltas = [(l[0], l[1], l[2], l[2] - l[1]) for l in analise_contrato]
+    deficits = [d for d in deltas if d[3] < 0]
+    topo = Inches(1.5)
+    _cartao(slide, Inches(0.6), topo, len(deficits), "atividades em déficit", VERMELHO)
+    _cartao(slide, Inches(4.75), topo, sum(1 for d in deltas if d[3] == 0), "conformes", VERDE)
+    _cartao(slide, Inches(8.9), topo, sum(1 for d in deltas if d[3] > 0), "com excedente", ROXO_PRIMARIO)
+
+    fim = 3.05  # polegadas: o texto dos déficits começa logo abaixo da tabela, sem sobrepor
+    if totais_analise:
+        linhas = [["Unidade", "Dimensionado", "Contratado", "Diferença"]]
+        for unidade, (dimensionado, contratado) in list(totais_analise.items())[:6]:  # 7 × 0,4" cabe
+            linhas.append([unidade, dimensionado, contratado, f"{contratado - dimensionado:+d}"])
+        _tabela(slide, Inches(3.05), linhas, larguras=[4.6, 2.5, 2.5, 2.5])
+        fim += 0.4 * len(linhas)
+
+    box = slide.shapes.add_textbox(Inches(0.6), Inches(fim + 0.25), Inches(12.1), Inches(7.2 - fim - 0.25))
+    tf = box.text_frame
+    tf.word_wrap = True
+    if deficits:
+        maiores = sorted(deficits, key=lambda d: d[3] / d[1] if d[1] else 0)[:3]
+        tf.text = "Maiores déficits: " + "; ".join(
+            f"{nome} ({delta:+d}" + (f", {100 * delta / dim:+.0f}%)" if dim else ")")
+            for nome, dim, _contr, delta in maiores)
+    else:
+        tf.text = "Nenhuma atividade em déficit: o contratado cobre o dimensionado em todas as linhas."
+    tf.paragraphs[0].font.size = Pt(14)
+    tf.paragraphs[0].font.color.rgb = TINTA
+
+
 def gerar_relatorio(
     caminho_saida: str,
     nome_contrato: str,
     resumo_rocada: dict,
     resultados_atividades: dict,
     analise_contrato: list | None = None,
+    totais_analise: dict | None = None,
 ):
     """Monta o PPTX executivo.
 
@@ -128,6 +199,7 @@ def gerar_relatorio(
         seca, pico] -- um slide de tabela é gerado por grupo, em vez de uma
         tabela única com todas as atividades (evita tabela comprida demais).
     analise_contrato: lista de linhas [atividade, dimensionado, contratado, status]
+    totais_analise: dict {unidade: [dimensionado, contratado]} para o slide de síntese
     """
     prs = Presentation()
     prs.slide_width = SLIDE_W
@@ -137,30 +209,29 @@ def gerar_relatorio(
           f"{nome_contrato}  ·  Relatório gerado pelo DimConservação")
 
     # Slide resumo roçada
-    slide = _slide_em_branco(prs)
-    _titulo(slide, "Resumo — Roçada (cenário de pico)")
     linhas = [["Modalidade", "Quantidade necessária", "Cenário de pico"]]
     for nome, r in resumo_rocada.items():
         qtd = r.get("equipes_arredondadas", "-")
         unidade = r.get("unidade", "equipe(s)")
-        linhas.append([nome, f"{qtd} {unidade}" if qtd != "-" else "-", r.get("cenario", "-")])
-    _tabela(slide, Inches(1.5), linhas, larguras=[5, 4, 3])
+        texto = f"{qtd} {unidade}" if qtd != "-" else "-"
+        if "equipes_divisao" in r:  # Roçada Manual: roçadores, equipes e colaboradores totais
+            texto += f" · {r['equipes_divisao']} equipe(s) · {r['colaboradores_totais']} colaborador(es)"
+        linhas.append([nome, texto, r.get("cenario", "-")])
+    _slides_tabela(prs, "Resumo — Roçada (cenário de pico)", linhas[0], linhas[1:], [4, 5.8, 2.3])
 
     # Um slide de tabela por grupo de atividades (Full Service, Especialistas, ...)
     cabecalho = ["Atividade", "Unidade", "Quantidade", "Equipes (chuva)", "Equipes (seca)", "Equipes (pico)"]
     for grupo, linhas_grupo in resultados_atividades.items():
         if not linhas_grupo:
             continue
-        slide = _slide_em_branco(prs)
-        _titulo(slide, f"Dimensionamento por atividade — {grupo}")
-        _tabela(slide, Inches(1.4), [cabecalho] + linhas_grupo, larguras=[4, 1.3, 2, 1.8, 1.8, 1.8])
+        _slides_tabela(prs, f"Dimensionamento por atividade — {grupo}", cabecalho, linhas_grupo,
+                       [4, 1.3, 2, 1.8, 1.8, 1.8])
 
     # Slide analise de contrato (se houver)
     if analise_contrato:
-        slide = _slide_em_branco(prs)
-        _titulo(slide, "Análise de Contrato — Dimensionado × Contratado")
-        cabecalho = ["Atividade", "Dimensionado", "Contratado", "Status"]
-        _tabela(slide, Inches(1.4), [cabecalho] + analise_contrato, larguras=[5, 2.5, 2.5, 2.5])
+        _slide_sintese(prs, analise_contrato, totais_analise)
+        _slides_tabela(prs, "Análise de Contrato — Dimensionado × Contratado",
+                       ["Atividade", "Dimensionado", "Contratado", "Status"], analise_contrato, [5, 2.5, 2.5, 2.5])
 
     prs.save(caminho_saida)
     return caminho_saida
