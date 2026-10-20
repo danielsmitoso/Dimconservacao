@@ -591,360 +591,369 @@ with aba_veg:
         "nenhuma margem operacional."
     )
 
-    st.markdown("#### 1. Contrato")
-    v1, v2, v3 = st.columns(3)
-    opcao_hmax = v1.selectbox("Altura máxima permitida (contrato)", ["30 cm", "50 cm", "Outra"],
-                              key="veg_hmax_opcao", help="30 cm é a grande maioria dos contratos; alguns usam 50 cm.")
-    if opcao_hmax == "Outra":
-        h_max = v1.number_input("Altura máxima (cm)", min_value=5.0, value=30.0, step=5.0, key="veg_hmax_outra")
+    if not crescimento.ARQUIVO_SERIE.exists():
+        # Sem o arquivo de clima, só esta aba fica indisponível: o resto do app segue funcionando.
+        st.error(
+            "**Arquivo de clima não encontrado:** `dados_clima/nasa_power_diario_2011_2024.json.gz`. Esta aba precisa "
+            "dele (clima diário 2011–2024 dos 27 estados). Se o app está publicado, envie a pasta **`dados_clima/`** "
+            "inteira para o repositório no GitHub (ela é pública, dado da NASA) e aguarde o app recarregar. "
+            "As outras abas funcionam normalmente; as abas de roçada usam os ciclos padrão."
+        )
     else:
-        h_max = float(opcao_hmax.split()[0])
-    h0 = v2.number_input("Altura pós-corte (cm)", min_value=0.0, max_value=20.0,
-                         value=crescimento.ALTURA_POS_CORTE_PADRAO_CM, step=0.5, key="veg_h0",
-                         help="Não é contratual: é o que a roçadeira deixa (normalmente 3 a 5 cm).")
-    solo = v3.selectbox("Solo predominante", list(crescimento.SOLOS), index=list(crescimento.SOLOS).index(crescimento.SOLO_PADRAO),
-                        key="veg_solo", help="Quanto de água o solo guarda para a planta (balanço hídrico): arenoso 40 mm, médio 70 mm, "
-                             "argiloso 100 mm (estimativa). Solo que guarda mais segura o crescimento no começo da seca.")
-    if h_max <= h0:
-        st.error("A altura máxima precisa ser maior que a altura pós-corte.")
-
-    st.markdown("#### 2. Localidade e clima")
-    nomes_uf = {f"{v['nome']} ({uf})": uf for uf, v in crescimento.CLIMA_UF.items()}
-    rotulos_uf = list(nomes_uf)
-    modo_local = st.radio(
-        "Clima usado", ["Ponto de referência do estado", "Um ou mais pontos do trecho (coordenadas)"], horizontal=True,
-        key="veg_modo_local",
-        help="Concessão longa, que passa por regiões de clima diferente: informe um ponto por região, com o peso de "
-             "cada um.",
-    )
-    pontos_clima = []  # (nome, peso, série diária)
-    if modo_local.startswith("Ponto de referência"):
-        rotulo_uf = st.selectbox("Estado", rotulos_uf, index=rotulos_uf.index("São Paulo (SP)"), key="veg_uf")
-        pontos_clima.append((rotulo_uf, 100.0, serie_clima_uf(nomes_uf[rotulo_uf])))
-    else:
-        ref_sp = crescimento.CLIMA_UF["SP"]
-        df_pts = st.data_editor(
-            pd.DataFrame([{"Ponto": "Região 1", "Estado": "São Paulo (SP)", "Latitude": ref_sp["lat"],
-                           "Longitude": ref_sp["lon"], "Peso (%)": 100.0}]),
-            key="veg_pontos", num_rows="dynamic", hide_index=True, width="stretch",
-            column_config={
-                "Ponto": st.column_config.TextColumn(required=True),
-                "Estado": st.column_config.SelectboxColumn(
-                    options=rotulos_uf, required=True,
-                    help="Clima usado enquanto a coordenada não é buscada (ou se a consulta falhar)."),
-                "Latitude": st.column_config.NumberColumn(min_value=-34.0, max_value=6.0, format="%.4f"),
-                "Longitude": st.column_config.NumberColumn(min_value=-74.0, max_value=-28.0, format="%.4f"),
-                "Peso (%)": st.column_config.NumberColumn(
-                    min_value=0.0, max_value=100.0, step=5.0, required=True,
-                    help="Quanto da área verde (ou da extensão) da concessão esse ponto representa."),
-            },
-        )
-        linhas_pts = [r for _, r in df_pts.iterrows() if r.get("Estado") in nomes_uf]
-        buscar = st.button("🛰️ Buscar o clima diário das coordenadas (NASA POWER, gratuito)", key="veg_buscar_pts")
-        buscados = st.session_state.setdefault("veg_coords_buscadas", set())
-        pendentes = []
-        for r in linhas_pts:
-            tem_coord = pd.notna(r.get("Latitude")) and pd.notna(r.get("Longitude"))
-            chave = (round(float(r["Latitude"]), 4), round(float(r["Longitude"]), 4)) if tem_coord else None
-            serie = None
-            if chave and (buscar or chave in buscados):
-                try:
-                    serie = serie_clima_coord(*chave)
-                    buscados.add(chave)
-                except Exception as e:  # rede bloqueada, API fora do ar etc.
-                    st.error(f"{r['Ponto']}: não foi possível consultar a NASA POWER ({type(e).__name__}). "
-                             "Usando o ponto de referência do estado.")
-            if serie is None:
-                serie = serie_clima_uf(nomes_uf[r["Estado"]])
-                if chave:
-                    pendentes.append(str(r["Ponto"]))
-            peso = float(r["Peso (%)"]) if pd.notna(r.get("Peso (%)")) else 0.0
-            pontos_clima.append((str(r["Ponto"]) if pd.notna(r.get("Ponto")) else "Ponto", peso, serie))
-        if pendentes:
-            st.caption(f"⏳ Ainda sem o clima da coordenada: {', '.join(pendentes)}. Até clicar em **Buscar**, vale o "
-                       "ponto de referência do estado de cada linha (a consulta envia só a coordenada).")
-        soma_pesos = sum(p for _, p, _ in pontos_clima)
-        if pontos_clima and soma_pesos > 0 and abs(soma_pesos - 100) > 0.5:
-            st.info(f"Os pesos somam {soma_pesos:.0f}% — o cálculo usa as proporções entre eles (normaliza para 100%).")
-        st.caption(
-            "**Como os pontos se combinam:** o crescimento de cada dia é a média dos pontos ponderada pelo peso, e o "
-            "pico de 30 dias é tirado dessa curva combinada. É a demanda total quando as equipes atendem a concessão "
-            "inteira: como regiões diferentes não chegam ao pico no mesmo dia, o resultado é menor ou igual à média dos "
-            "picos. Se cada região tiver equipe própria, calcule uma região por vez (um ponto, peso 100%)."
-        )
-    if not pontos_clima or sum(p for _, p, _ in pontos_clima) <= 0:
-        st.warning("Informe pelo menos um ponto com peso maior que zero. Usando São Paulo até lá.")
-        pontos_clima = [("São Paulo (SP)", 100.0, serie_clima_uf("SP"))]
-    descricao_clima = "; ".join(
-        f"{s['referencia']}" + (f" ({p:g}%)" if len(pontos_clima) > 1 else "") for _, p, s in pontos_clima if p > 0)
-    st.caption(f"Clima em uso: **{descricao_clima}** · Fonte: NASA POWER, dados diários 2011–2024 "
-               "(2011 só aquece o balanço hídrico; as médias usam 2012–2024).")
-
-    st.markdown("#### 3. Vegetação predominante")
-    st.caption(
-        "Informe as espécies mais presentes e a % aproximada de cobertura. O crescimento é a **média ponderada** "
-        "pela cobertura (o objetivo é não estourar a altura em trechos grandes, de 100–200 m; pontos isolados se "
-        "corrigem na operação). A espécie é o que mais muda o resultado: em SP, 100% colonião dá cerca de 1,5 vez os "
-        "ciclos da vegetação mista. Se não souber, deixe 'Vegetação mista / não identificada'."
-    )
-    df_comp = st.data_editor(
-        pd.DataFrame([{"Espécie": crescimento.ESPECIE_PADRAO, "Cobertura (%)": 100.0}]),
-        key="veg_composicao", num_rows="dynamic", hide_index=True, width="stretch",
-        column_config={
-            "Espécie": st.column_config.SelectboxColumn(options=list(crescimento.ESPECIES), required=True),
-            "Cobertura (%)": st.column_config.NumberColumn(min_value=0.0, max_value=100.0, step=5.0, required=True),
-        },
-    )
-    composicao = {}
-    for _, linha in df_comp.dropna().iterrows():
-        composicao[linha["Espécie"]] = composicao.get(linha["Espécie"], 0.0) + float(linha["Cobertura (%)"])
-    soma_cob = sum(composicao.values())
-    if composicao and abs(soma_cob - 100) > 0.5:
-        st.info(f"As coberturas somam {soma_cob:.0f}% — o cálculo usa as proporções entre elas (normaliza para 100%).")
-    with st.expander("Parâmetros das espécies (temperatura-base, velocidade e fonte)"):
-        st.dataframe(pd.DataFrame([
-            {"Espécie": n, "Temperatura-base (°C)": e["tb"], "cm por grau-dia": e["k"], "Fonte": e["fonte"]}
-            for n, e in crescimento.ESPECIES.items()
-        ]), width="stretch", hide_index=True)
-
-    # Crescimento diário de cada ponto e a curva combinada (sem calibração).
-    cresc_pontos = [(nome, peso, crescimento.crescimento_diario(serie, composicao, solo))
-                    for nome, peso, serie in pontos_clima if peso > 0]
-    resumo_veg = crescimento.resumo_mensal(crescimento.combinar([(p, c) for _, p, c in cresc_pontos]))
-
-    st.markdown("#### 4. Calibração com dado de campo (opcional)")
-    calibracao = 1.0
-    with st.expander("Tenho medições de altura em campo"):
-        st.caption(
-            "Para cada ponto medido: o mês da medição, quantos dias se passaram desde a última roçada e a altura "
-            "medida. O app compara o crescimento real com o que o modelo prevê para esses mesmos dias (considerando "
-            "meados do mês da medição e os meses anteriores percorridos) e ajusta todos os meses pelo mesmo fator. "
-            "A literatura usada vem de pastagem adubada — na faixa de domínio o crescimento real pode ser diferente, "
-            "por isso calibrar é o que torna o número confiável para contrato."
-        )
-        df_obs = st.data_editor(
-            pd.DataFrame({"Mês": pd.Series(dtype="str"), "Dias desde a última roçada": pd.Series(dtype="float"),
-                          "Altura medida (cm)": pd.Series(dtype="float")}),
-            key="veg_obs", num_rows="dynamic", hide_index=True, width="stretch",
-            column_config={
-                "Mês": st.column_config.SelectboxColumn(options=crescimento.MESES, required=True),
-                "Dias desde a última roçada": st.column_config.NumberColumn(min_value=1, step=1),
-                "Altura medida (cm)": st.column_config.NumberColumn(min_value=0.0, step=1.0),
-            },
-        )
-        observacoes = [
-            {"mes": crescimento.MESES.index(r["Mês"]), "dias": r["Dias desde a última roçada"], "altura_cm": r["Altura medida (cm)"]}
-            for _, r in df_obs.dropna().iterrows() if r["Mês"] in crescimento.MESES
-        ]
-        fator = (crescimento.fator_calibracao(observacoes, None, composicao, solo, h0, base=resumo_veg["media"])
-                 if observacoes else None)
-        if fator:
-            mem_cal = crescimento.memoria_calibracao(observacoes, None, composicao, solo, h0, base=resumo_veg["media"])
-            st.dataframe(pd.DataFrame([{
-                "Mês": crescimento.MESES[x["mes"]], "Dias desde a roçada": int(x["dias"]), "Altura medida (cm)": x["altura"],
-                f"Crescimento medido (cm) = altura − {h0:g}": round(x["medido"], 1),
-                "Previsto pelo modelo nos mesmos dias (cm)": round(x["previsto"], 1),
-                "Razão medido ÷ previsto": round(x["razao"], 2),
-            } for x in mem_cal]), hide_index=True, width="stretch")
-            st.caption(
-                f"**Fator de calibração = média das razões = {fator:.2f}.** O previsto soma, dia a dia para trás a partir "
-                "do meio do mês da medição, o crescimento médio do modelo (ano típico, sem calibração) de cada mês "
-                f"percorrido. O fator multiplica o crescimento de **todos os meses**: {fator:.2f} < 1 = o campo cresce "
-                "menos que a literatura; > 1 = cresce mais."
-            )
-            if st.checkbox(f"Aplicar fator de calibração {fator:.2f} (medições: {len(observacoes)})", value=True, key="veg_usar_fator"):
-                calibracao = fator
-        elif observacoes:
-            st.warning("Nenhuma medição válida: a altura medida precisa ser maior que a altura pós-corte.")
-        st.caption("📷 Em estudo: ler a altura a partir de uma foto com régua/estaca graduada no enquadramento.")
-
-    st.markdown("#### 5. Resultado")
-    q1, q2 = st.columns(2)
-    ano_rotulo = q1.radio(
-        "Ano de referência", [f"Ano típico (média {resumo_veg['anos'][0]}–{resumo_veg['anos'][1]})",
-                              "Ano exigente (percentil 80 entre os anos)"],
-        key="veg_ano",
-        help="Típico: a média dos anos. Exigente: um ano mais chuvoso/quente que 80% dos anos da série — dá margem "
-             "para o ano em que a vegetação cresce mais, sem inventar fator operacional.",
-    )
-    exigente = ano_rotulo.startswith("Ano exigente")
-    criterio_rotulo = q2.radio(
-        "Critério", ["Pico de 30 dias do período (recomendado)", "Média do período"], key="veg_criterio",
-        help="Pico: a equipe dá conta mesmo nos 30 dias em que o capim cresce mais rápido. Média: dimensiona menos, "
-             "mas no pico parte dos trechos passa da altura.",
-    )
-    criterio = "critico" if criterio_rotulo.startswith("Pico") else "media"
-    pico_base = resumo_veg["pico_p80" if exigente else "pico"]
-    media_base = resumo_veg["media_p80" if exigente else "media"]
-    taxa_pico = [x * calibracao for x in pico_base]
-    taxa_media = [x * calibracao for x in media_base]
-    taxas_dim = taxa_pico if criterio == "critico" else taxa_media
-
-    p1, p2 = st.columns([1, 3])
-    n_meses_chuva = p1.number_input(
-        "Meses de chuva", min_value=1, max_value=11, value=pp.MESES_CHUVA_PADRAO, step=1, key="veg_n_meses_chuva",
-        help=f"Padrão {pp.MESES_CHUVA_PADRAO} + {pp.MESES_SECA_PADRAO}, a divisão usada nos contratos.",
-    )
-    sincronizar_padrao("veg_meses_alto",
-                       [crescimento.MESES[i] for i in crescimento.escolher_periodos(taxa_pico, n_meses_chuva)])
-    meses_alto_sel = p2.multiselect(
-        "Meses do período de chuva / crescimento alto (os demais formam o período de seca)", crescimento.MESES,
-        key="veg_meses_alto",
-        help="Sugeridos: os meses consecutivos que, separados do resto do ano, exigem MENOS equipe (cada período "
-             "com equipe para o seu pico). Não é o mesmo que os meses de maior crescimento: o solo demora a "
-             "recarregar no começo das chuvas e segura água no fim delas. Dá para trocar os meses à mão.",
-    )
-    idx_alto = sorted(crescimento.MESES.index(m) for m in meses_alto_sel)
-    idx_baixo = [i for i in range(12) if i not in idx_alto]
-    if idx_alto and idx_baixo:
-        livre = crescimento.divisao_otima_livre(taxa_pico)
-        custo_sel = crescimento.custo_divisao(taxa_pico, idx_alto)
-        custo_livre = crescimento.custo_divisao(taxa_pico, livre)
-        if sorted(livre) != idx_alto and custo_livre < 0.995 * custo_sel:
-            st.caption(
-                f"💡 Para este clima, a divisão que exige menos equipe seria **{len(livre)} meses de chuva "
-                f"({crescimento.rotulo_meses(livre)}) + {12 - len(livre)} de seca**: "
-                f"{100 * (1 - custo_livre / custo_sel):.0f}% menos equipes × meses que a divisão escolhida. Só informativo."
-            )
+        st.markdown("#### 1. Contrato")
+        v1, v2, v3 = st.columns(3)
+        opcao_hmax = v1.selectbox("Altura máxima permitida (contrato)", ["30 cm", "50 cm", "Outra"],
+                                  key="veg_hmax_opcao", help="30 cm é a grande maioria dos contratos; alguns usam 50 cm.")
+        if opcao_hmax == "Outra":
+            h_max = v1.number_input("Altura máxima (cm)", min_value=5.0, value=30.0, step=5.0, key="veg_hmax_outra")
         else:
-            st.caption("✅ Para este clima, a divisão escolhida é também a que exige menos equipe.")
+            h_max = float(opcao_hmax.split()[0])
+        h0 = v2.number_input("Altura pós-corte (cm)", min_value=0.0, max_value=20.0,
+                             value=crescimento.ALTURA_POS_CORTE_PADRAO_CM, step=0.5, key="veg_h0",
+                             help="Não é contratual: é o que a roçadeira deixa (normalmente 3 a 5 cm).")
+        solo = v3.selectbox("Solo predominante", list(crescimento.SOLOS), index=list(crescimento.SOLOS).index(crescimento.SOLO_PADRAO),
+                            key="veg_solo", help="Quanto de água o solo guarda para a planta (balanço hídrico): arenoso 40 mm, médio 70 mm, "
+                                 "argiloso 100 mm (estimativa). Solo que guarda mais segura o crescimento no começo da seca.")
+        if h_max <= h0:
+            st.error("A altura máxima precisa ser maior que a altura pós-corte.")
 
-    clima_pts = [(p, crescimento.clima_mensal(s)) for _, p, s in pontos_clima if p > 0]
-    peso_tot = sum(p for p, _ in clima_pts)
-
-    def _clima_medio(campo):
-        return [sum(p * c[campo][m] for p, c in clima_pts) / peso_tot for m in range(12)]
-
-    altura_util = max(h_max - h0, 1e-9)
-    ciclos_mes = [taxa_pico[m] * crescimento.DIAS_MES[m] / altura_util for m in range(12)]
-    df_mensal = pd.DataFrame({
-        "Mês": crescimento.MESES,
-        "Mínima (°C)": [round(x, 1) for x in _clima_medio("tmin")],
-        "Máxima (°C)": [round(x, 1) for x in _clima_medio("tmax")],
-        "Chuva (mm)": [round(x) for x in _clima_medio("chuva_mm")],
-        "Água disponível (%)": [round(a * 100) for a in resumo_veg["agua"]],
-        "Crescimento médio (cm/dia)": [round(t, 2) for t in taxa_media],
-        "Pico de 30 dias (cm/dia)": [round(t, 2) for t in taxa_pico],
-        "Ciclos exigidos no mês": [round(x, 2) for x in ciclos_mes],
-        "Período": ["Chuva" if i in idx_alto else "Seca" for i in range(12)],
-    })
-    df_graf = pd.DataFrame({
-        "Mês": crescimento.MESES,
-        "Chuva": [round(ciclos_mes[i], 2) if i in idx_alto else 0 for i in range(12)],
-        "Seca": [round(ciclos_mes[i], 2) if i not in idx_alto else 0 for i in range(12)],
-    })
-    st.markdown("**Ciclos que cada mês exige** (pico de 30 dias" + (", ano exigente" if exigente else "") + ")")
-    st.bar_chart(df_graf, x="Mês", y=["Chuva", "Seca"], color=["#5E22F3", "#C9B8FA"], height=240, sort=False,
-                 y_label="ciclos no mês")
-    st.dataframe(df_mensal, hide_index=True, width="stretch")
-    st.caption("Ciclos exigidos no mês = pico de 30 dias × dias do mês ÷ (altura máx. − pós-corte). A equipe de cada "
-               "período é dimensionada pelo mês mais exigente dele.")
-
-    if not idx_alto or not idx_baixo:
-        st.warning("Deixe pelo menos um mês em cada período (chuva e seca).")
-    elif h_max > h0:
-        res_alto = crescimento.ciclos_periodo(taxas_dim, idx_alto, h_max, h0, criterio)
-        res_baixo = crescimento.ciclos_periodo(taxas_dim, idx_baixo, h_max, h0, criterio)
-        r1, r2 = st.columns(2)
-        for col, nome_p, res, idx_p in ((r1, "chuva", res_alto, idx_alto), (r2, "seca", res_baixo, idx_baixo)):
-            with col:
-                st.markdown(f"**Período de {nome_p}** — {len(idx_p)} meses ({crescimento.rotulo_meses(idx_p)})")
-                if res["intervalo_dias"]:
-                    st.metric("Ciclos no período (arredondado para cima)", math.ceil(res["ciclos"]),
-                              help=f"Valor exato: {res['ciclos']:.2f} ciclos.")
-                    st.caption(
-                        f"Crescimento {res['taxa']:.2f} cm/dia → leva **{res['intervalo_dias']:.0f} dias** para ir de "
-                        f"{h0:g} a {h_max:g} cm. É o prazo máximo para a equipe percorrer o trecho inteiro e voltar ao mesmo ponto."
-                    )
-                    if criterio == "critico":
-                        st.caption(f"📌 Mês que define os ciclos da {nome_p}: **{crescimento.MESES[max(idx_p, key=lambda i: taxas_dim[i])]}** "
-                                   "(o de maior pico de 30 dias no período).")
-                else:
-                    st.metric("Ciclos no período", "0")
-                    st.caption("Sem crescimento relevante neste período (frio ou seco demais para as espécies informadas).")
-
-        if len(cresc_pontos) > 1:
-            linhas_pts_res = []
-            for nome_pt, peso_pt, cr_pt in cresc_pontos:
-                rp = crescimento.resumo_mensal(cr_pt)
-                tx = [x * calibracao for x in rp[("pico_p80" if exigente else "pico") if criterio == "critico"
-                                                 else ("media_p80" if exigente else "media")]]
-                ca = crescimento.ciclos_periodo(tx, idx_alto, h_max, h0, criterio)["ciclos"]
-                cs = crescimento.ciclos_periodo(tx, idx_baixo, h_max, h0, criterio)["ciclos"]
-                linhas_pts_res.append({"Ponto": nome_pt, "Peso (%)": round(100 * peso_pt / sum(p for _, p, _ in cresc_pontos), 1),
-                                       "Ciclos chuva": round(ca, 2), "Ciclos seca": round(cs, 2),
-                                       "Melhor divisão do ponto": crescimento.rotulo_meses(crescimento.escolher_periodos(tx, n_meses_chuva))})
-            linhas_pts_res.append({"Ponto": "Combinado (usado)", "Peso (%)": 100.0, "Ciclos chuva": round(res_alto["ciclos"], 2),
-                                   "Ciclos seca": round(res_baixo["ciclos"], 2), "Melhor divisão do ponto": crescimento.rotulo_meses(idx_alto)})
-            st.markdown("**Por ponto de clima** (mesmos meses de chuva e seca para todos)")
-            st.dataframe(pd.DataFrame(linhas_pts_res), hide_index=True, width="stretch")
-            st.caption("O combinado não é a média dos ciclos: é calculado sobre a curva diária combinada, e por isso fica "
-                       "abaixo da média quando as regiões chegam ao pico em datas diferentes.")
-
-        linhas_mem = []
-        rotulo_ano = "ano exigente (P80)" if exigente else "ano típico"
-        for nome_p, res, idx_p in (("Chuva", res_alto, idx_alto), ("Seca", res_baixo, idx_baixo)):
-            def _l(passo, conta, resultado):
-                linhas_mem.append({"Período": nome_p, "Passo": passo, "Resultado": resultado, "Conta": conta})
-            if len(cresc_pontos) > 1:
-                _l("Clima", "média diária dos pontos, ponderada pelo peso: " + "; ".join(
-                    f"{n} {100 * p / sum(q for _, q, _ in cresc_pontos):.0f}%" for n, p, _ in cresc_pontos), "curva combinada")
-            if criterio == "critico":
-                m = max(idx_p, key=lambda i: taxas_dim[i])
-                _l("Mês usado", "mês de maior pico de 30 dias no período", crescimento.MESES[m])
-                for e, peso_e in resumo_veg["pesos"].items():
-                    k_e, gd_e = crescimento.ESPECIES[e]["k"], resumo_veg["gd"][e][m]
-                    _l(f"1. Crescimento térmico — {e}",
-                       f"{peso_e * 100:.0f}% da cobertura × {k_e:g} cm/grau-dia × {gd_e:.2f} graus-dia/dia "
-                       "(Ometto, pela mínima e máxima de cada dia; média do mês)", f"{peso_e * k_e * gd_e:.3f} cm/dia")
-                _l("2. Crescimento sem falta de água", "soma das espécies", f"{resumo_veg['termico'][m]:.3f} cm/dia")
-                _l("3. × água disponível (balanço hídrico diário)",
-                   f"água média do mês {resumo_veg['agua'][m]:.2f}; o produto é feito dia a dia (média de 2012–2024)",
-                   f"{resumo_veg['media'][m]:.3f} cm/dia (média do mês)")
-                _l(f"4. Pico de 30 dias — {rotulo_ano}", "maior média móvel de 30 dias dentro do mês",
-                   f"{pico_base[m]:.3f} cm/dia")
-                _l("5. × fator de calibração", f"{pico_base[m]:.3f} × {calibracao:.2f}"
-                   + ("" if fator and calibracao != 1.0 else " (sem medição de campo aplicada)"), f"{taxas_dim[m]:.3f} cm/dia")
-            else:
-                _l(f"1 a 4. Crescimento médio de cada mês — {rotulo_ano}",
-                   "térmico × água, dia a dia, × calibração: " + "; ".join(
-                       f"{crescimento.MESES[i]} {taxas_dim[i]:.3f}" for i in idx_p), "cm/dia")
-                _l("Média do período", f"Σ(cm/dia × dias do mês) ÷ {res['dias']:.0f} dias", f"{res['taxa']:.3f} cm/dia")
-            if res["intervalo_dias"]:
-                _l("6. Dias até a altura máxima", f"({h_max:g} − {h0:g}) cm ÷ {res['taxa']:.3f} cm/dia",
-                   f"{res['intervalo_dias']:.1f} dias")
-                _l("7. Ciclos no período", f"{res['dias']:.0f} dias corridos do período ÷ {res['intervalo_dias']:.1f} dias",
-                   f"{res['ciclos']:.2f} → {max(1, math.ceil(res['ciclos']))} ciclos (arredondado para cima)")
-        with st.expander("🧮 Memória de cálculo do crescimento e dos ciclos"):
-            st.caption(
-                "Crescimento do dia (cm/dia) = Σ[ % da cobertura × cm por grau-dia × graus-dia do dia (Ometto) ] × água "
-                "disponível do dia × fator de calibração. Pico de 30 dias = maior média móvel de 30 dias dentro do mês. "
-                "Dias até a altura máxima = (altura máx. − pós-corte) ÷ crescimento. Ciclos = dias do período ÷ dias até "
-                "a altura máxima."
-            )
-            st.dataframe(pd.DataFrame(linhas_mem), hide_index=True, width="stretch")
-            st.caption("Esta tabela vai para o Excel (aba 'Memória crescimento') quando os ciclos são aplicados nas abas de roçada.")
-        ciclos_sug = {"cc": max(1, math.ceil(res_alto["ciclos"])), "mc": len(idx_alto),
-                      "cs": max(1, math.ceil(res_baixo["ciclos"])), "ms": len(idx_baixo)}
-        ref = pp.CICLOS_PADRAO["rocada"]
-        st.caption(
-            f"Para comparar — referência padrão das abas de roçada: {ref['ciclos_chuva']} ciclos em {ref['meses_chuva']} meses "
-            f"de chuva e {ref['ciclos_seca']} em {ref['meses_seca']} meses de seca ({ref['fonte']})."
+        st.markdown("#### 2. Localidade e clima")
+        nomes_uf = {f"{v['nome']} ({uf})": uf for uf, v in crescimento.CLIMA_UF.items()}
+        rotulos_uf = list(nomes_uf)
+        modo_local = st.radio(
+            "Clima usado", ["Ponto de referência do estado", "Um ou mais pontos do trecho (coordenadas)"], horizontal=True,
+            key="veg_modo_local",
+            help="Concessão longa, que passa por regiões de clima diferente: informe um ponto por região, com o peso de "
+                 "cada um.",
         )
-        if st.button("✅ Usar estes ciclos nas abas Roçada Manual e Roçada Mecanizada", type="primary"):
-            for pre in ("man", "mec"):
-                for chave, valor in ciclos_sug.items():
-                    st.session_state[f"{pre}_{chave}"] = valor
-            st.session_state["veg_versao"] = st.session_state.get("veg_versao", 0) + 1
-            st.session_state["veg_aplicado"] = {
-                "valores": ciclos_sug,
-                "texto": (f"Modelo de crescimento diário — clima {descricao_clima}; {rotulo_ano}; chuva "
-                          f"{crescimento.rotulo_meses(idx_alto)}; altura máx. {h_max:g} cm; pós-corte {h0:g} cm; "
-                          f"solo {solo.lower()}; critério: {criterio_rotulo}; calibração {calibracao:.2f}; espécies: "
-                          + ", ".join(f"{e} {p:.0f}%" for e, p in composicao.items())),
-                "memoria": linhas_mem,
-            }
-            st.success("Ciclos e meses aplicados nas abas de roçada (você ainda pode editar lá).")
+        pontos_clima = []  # (nome, peso, série diária)
+        if modo_local.startswith("Ponto de referência"):
+            rotulo_uf = st.selectbox("Estado", rotulos_uf, index=rotulos_uf.index("São Paulo (SP)"), key="veg_uf")
+            pontos_clima.append((rotulo_uf, 100.0, serie_clima_uf(nomes_uf[rotulo_uf])))
+        else:
+            ref_sp = crescimento.CLIMA_UF["SP"]
+            df_pts = st.data_editor(
+                pd.DataFrame([{"Ponto": "Região 1", "Estado": "São Paulo (SP)", "Latitude": ref_sp["lat"],
+                               "Longitude": ref_sp["lon"], "Peso (%)": 100.0}]),
+                key="veg_pontos", num_rows="dynamic", hide_index=True, width="stretch",
+                column_config={
+                    "Ponto": st.column_config.TextColumn(required=True),
+                    "Estado": st.column_config.SelectboxColumn(
+                        options=rotulos_uf, required=True,
+                        help="Clima usado enquanto a coordenada não é buscada (ou se a consulta falhar)."),
+                    "Latitude": st.column_config.NumberColumn(min_value=-34.0, max_value=6.0, format="%.4f"),
+                    "Longitude": st.column_config.NumberColumn(min_value=-74.0, max_value=-28.0, format="%.4f"),
+                    "Peso (%)": st.column_config.NumberColumn(
+                        min_value=0.0, max_value=100.0, step=5.0, required=True,
+                        help="Quanto da área verde (ou da extensão) da concessão esse ponto representa."),
+                },
+            )
+            linhas_pts = [r for _, r in df_pts.iterrows() if r.get("Estado") in nomes_uf]
+            buscar = st.button("🛰️ Buscar o clima diário das coordenadas (NASA POWER, gratuito)", key="veg_buscar_pts")
+            buscados = st.session_state.setdefault("veg_coords_buscadas", set())
+            pendentes = []
+            for r in linhas_pts:
+                tem_coord = pd.notna(r.get("Latitude")) and pd.notna(r.get("Longitude"))
+                chave = (round(float(r["Latitude"]), 4), round(float(r["Longitude"]), 4)) if tem_coord else None
+                serie = None
+                if chave and (buscar or chave in buscados):
+                    try:
+                        serie = serie_clima_coord(*chave)
+                        buscados.add(chave)
+                    except Exception as e:  # rede bloqueada, API fora do ar etc.
+                        st.error(f"{r['Ponto']}: não foi possível consultar a NASA POWER ({type(e).__name__}). "
+                                 "Usando o ponto de referência do estado.")
+                if serie is None:
+                    serie = serie_clima_uf(nomes_uf[r["Estado"]])
+                    if chave:
+                        pendentes.append(str(r["Ponto"]))
+                peso = float(r["Peso (%)"]) if pd.notna(r.get("Peso (%)")) else 0.0
+                pontos_clima.append((str(r["Ponto"]) if pd.notna(r.get("Ponto")) else "Ponto", peso, serie))
+            if pendentes:
+                st.caption(f"⏳ Ainda sem o clima da coordenada: {', '.join(pendentes)}. Até clicar em **Buscar**, vale o "
+                           "ponto de referência do estado de cada linha (a consulta envia só a coordenada).")
+            soma_pesos = sum(p for _, p, _ in pontos_clima)
+            if pontos_clima and soma_pesos > 0 and abs(soma_pesos - 100) > 0.5:
+                st.info(f"Os pesos somam {soma_pesos:.0f}% — o cálculo usa as proporções entre eles (normaliza para 100%).")
+            st.caption(
+                "**Como os pontos se combinam:** o crescimento de cada dia é a média dos pontos ponderada pelo peso, e o "
+                "pico de 30 dias é tirado dessa curva combinada. É a demanda total quando as equipes atendem a concessão "
+                "inteira: como regiões diferentes não chegam ao pico no mesmo dia, o resultado é menor ou igual à média dos "
+                "picos. Se cada região tiver equipe própria, calcule uma região por vez (um ponto, peso 100%)."
+            )
+        if not pontos_clima or sum(p for _, p, _ in pontos_clima) <= 0:
+            st.warning("Informe pelo menos um ponto com peso maior que zero. Usando São Paulo até lá.")
+            pontos_clima = [("São Paulo (SP)", 100.0, serie_clima_uf("SP"))]
+        descricao_clima = "; ".join(
+            f"{s['referencia']}" + (f" ({p:g}%)" if len(pontos_clima) > 1 else "") for _, p, s in pontos_clima if p > 0)
+        st.caption(f"Clima em uso: **{descricao_clima}** · Fonte: NASA POWER, dados diários 2011–2024 "
+                   "(2011 só aquece o balanço hídrico; as médias usam 2012–2024).")
+
+        st.markdown("#### 3. Vegetação predominante")
+        st.caption(
+            "Informe as espécies mais presentes e a % aproximada de cobertura. O crescimento é a **média ponderada** "
+            "pela cobertura (o objetivo é não estourar a altura em trechos grandes, de 100–200 m; pontos isolados se "
+            "corrigem na operação). A espécie é o que mais muda o resultado: em SP, 100% colonião dá cerca de 1,5 vez os "
+            "ciclos da vegetação mista. Se não souber, deixe 'Vegetação mista / não identificada'."
+        )
+        df_comp = st.data_editor(
+            pd.DataFrame([{"Espécie": crescimento.ESPECIE_PADRAO, "Cobertura (%)": 100.0}]),
+            key="veg_composicao", num_rows="dynamic", hide_index=True, width="stretch",
+            column_config={
+                "Espécie": st.column_config.SelectboxColumn(options=list(crescimento.ESPECIES), required=True),
+                "Cobertura (%)": st.column_config.NumberColumn(min_value=0.0, max_value=100.0, step=5.0, required=True),
+            },
+        )
+        composicao = {}
+        for _, linha in df_comp.dropna().iterrows():
+            composicao[linha["Espécie"]] = composicao.get(linha["Espécie"], 0.0) + float(linha["Cobertura (%)"])
+        soma_cob = sum(composicao.values())
+        if composicao and abs(soma_cob - 100) > 0.5:
+            st.info(f"As coberturas somam {soma_cob:.0f}% — o cálculo usa as proporções entre elas (normaliza para 100%).")
+        with st.expander("Parâmetros das espécies (temperatura-base, velocidade e fonte)"):
+            st.dataframe(pd.DataFrame([
+                {"Espécie": n, "Temperatura-base (°C)": e["tb"], "cm por grau-dia": e["k"], "Fonte": e["fonte"]}
+                for n, e in crescimento.ESPECIES.items()
+            ]), width="stretch", hide_index=True)
+
+        # Crescimento diário de cada ponto e a curva combinada (sem calibração).
+        cresc_pontos = [(nome, peso, crescimento.crescimento_diario(serie, composicao, solo))
+                        for nome, peso, serie in pontos_clima if peso > 0]
+        resumo_veg = crescimento.resumo_mensal(crescimento.combinar([(p, c) for _, p, c in cresc_pontos]))
+
+        st.markdown("#### 4. Calibração com dado de campo (opcional)")
+        calibracao = 1.0
+        with st.expander("Tenho medições de altura em campo"):
+            st.caption(
+                "Para cada ponto medido: o mês da medição, quantos dias se passaram desde a última roçada e a altura "
+                "medida. O app compara o crescimento real com o que o modelo prevê para esses mesmos dias (considerando "
+                "meados do mês da medição e os meses anteriores percorridos) e ajusta todos os meses pelo mesmo fator. "
+                "A literatura usada vem de pastagem adubada — na faixa de domínio o crescimento real pode ser diferente, "
+                "por isso calibrar é o que torna o número confiável para contrato."
+            )
+            df_obs = st.data_editor(
+                pd.DataFrame({"Mês": pd.Series(dtype="str"), "Dias desde a última roçada": pd.Series(dtype="float"),
+                              "Altura medida (cm)": pd.Series(dtype="float")}),
+                key="veg_obs", num_rows="dynamic", hide_index=True, width="stretch",
+                column_config={
+                    "Mês": st.column_config.SelectboxColumn(options=crescimento.MESES, required=True),
+                    "Dias desde a última roçada": st.column_config.NumberColumn(min_value=1, step=1),
+                    "Altura medida (cm)": st.column_config.NumberColumn(min_value=0.0, step=1.0),
+                },
+            )
+            observacoes = [
+                {"mes": crescimento.MESES.index(r["Mês"]), "dias": r["Dias desde a última roçada"], "altura_cm": r["Altura medida (cm)"]}
+                for _, r in df_obs.dropna().iterrows() if r["Mês"] in crescimento.MESES
+            ]
+            fator = (crescimento.fator_calibracao(observacoes, None, composicao, solo, h0, base=resumo_veg["media"])
+                     if observacoes else None)
+            if fator:
+                mem_cal = crescimento.memoria_calibracao(observacoes, None, composicao, solo, h0, base=resumo_veg["media"])
+                st.dataframe(pd.DataFrame([{
+                    "Mês": crescimento.MESES[x["mes"]], "Dias desde a roçada": int(x["dias"]), "Altura medida (cm)": x["altura"],
+                    f"Crescimento medido (cm) = altura − {h0:g}": round(x["medido"], 1),
+                    "Previsto pelo modelo nos mesmos dias (cm)": round(x["previsto"], 1),
+                    "Razão medido ÷ previsto": round(x["razao"], 2),
+                } for x in mem_cal]), hide_index=True, width="stretch")
+                st.caption(
+                    f"**Fator de calibração = média das razões = {fator:.2f}.** O previsto soma, dia a dia para trás a partir "
+                    "do meio do mês da medição, o crescimento médio do modelo (ano típico, sem calibração) de cada mês "
+                    f"percorrido. O fator multiplica o crescimento de **todos os meses**: {fator:.2f} < 1 = o campo cresce "
+                    "menos que a literatura; > 1 = cresce mais."
+                )
+                if st.checkbox(f"Aplicar fator de calibração {fator:.2f} (medições: {len(observacoes)})", value=True, key="veg_usar_fator"):
+                    calibracao = fator
+            elif observacoes:
+                st.warning("Nenhuma medição válida: a altura medida precisa ser maior que a altura pós-corte.")
+            st.caption("📷 Em estudo: ler a altura a partir de uma foto com régua/estaca graduada no enquadramento.")
+
+        st.markdown("#### 5. Resultado")
+        q1, q2 = st.columns(2)
+        ano_rotulo = q1.radio(
+            "Ano de referência", [f"Ano típico (média {resumo_veg['anos'][0]}–{resumo_veg['anos'][1]})",
+                                  "Ano exigente (percentil 80 entre os anos)"],
+            key="veg_ano",
+            help="Típico: a média dos anos. Exigente: um ano mais chuvoso/quente que 80% dos anos da série — dá margem "
+                 "para o ano em que a vegetação cresce mais, sem inventar fator operacional.",
+        )
+        exigente = ano_rotulo.startswith("Ano exigente")
+        criterio_rotulo = q2.radio(
+            "Critério", ["Pico de 30 dias do período (recomendado)", "Média do período"], key="veg_criterio",
+            help="Pico: a equipe dá conta mesmo nos 30 dias em que o capim cresce mais rápido. Média: dimensiona menos, "
+                 "mas no pico parte dos trechos passa da altura.",
+        )
+        criterio = "critico" if criterio_rotulo.startswith("Pico") else "media"
+        pico_base = resumo_veg["pico_p80" if exigente else "pico"]
+        media_base = resumo_veg["media_p80" if exigente else "media"]
+        taxa_pico = [x * calibracao for x in pico_base]
+        taxa_media = [x * calibracao for x in media_base]
+        taxas_dim = taxa_pico if criterio == "critico" else taxa_media
+
+        p1, p2 = st.columns([1, 3])
+        n_meses_chuva = p1.number_input(
+            "Meses de chuva", min_value=1, max_value=11, value=pp.MESES_CHUVA_PADRAO, step=1, key="veg_n_meses_chuva",
+            help=f"Padrão {pp.MESES_CHUVA_PADRAO} + {pp.MESES_SECA_PADRAO}, a divisão usada nos contratos.",
+        )
+        sincronizar_padrao("veg_meses_alto",
+                           [crescimento.MESES[i] for i in crescimento.escolher_periodos(taxa_pico, n_meses_chuva)])
+        meses_alto_sel = p2.multiselect(
+            "Meses do período de chuva / crescimento alto (os demais formam o período de seca)", crescimento.MESES,
+            key="veg_meses_alto",
+            help="Sugeridos: os meses consecutivos que, separados do resto do ano, exigem MENOS equipe (cada período "
+                 "com equipe para o seu pico). Não é o mesmo que os meses de maior crescimento: o solo demora a "
+                 "recarregar no começo das chuvas e segura água no fim delas. Dá para trocar os meses à mão.",
+        )
+        idx_alto = sorted(crescimento.MESES.index(m) for m in meses_alto_sel)
+        idx_baixo = [i for i in range(12) if i not in idx_alto]
+        if idx_alto and idx_baixo:
+            livre = crescimento.divisao_otima_livre(taxa_pico)
+            custo_sel = crescimento.custo_divisao(taxa_pico, idx_alto)
+            custo_livre = crescimento.custo_divisao(taxa_pico, livre)
+            if sorted(livre) != idx_alto and custo_livre < 0.995 * custo_sel:
+                st.caption(
+                    f"💡 Para este clima, a divisão que exige menos equipe seria **{len(livre)} meses de chuva "
+                    f"({crescimento.rotulo_meses(livre)}) + {12 - len(livre)} de seca**: "
+                    f"{100 * (1 - custo_livre / custo_sel):.0f}% menos equipes × meses que a divisão escolhida. Só informativo."
+                )
+            else:
+                st.caption("✅ Para este clima, a divisão escolhida é também a que exige menos equipe.")
+
+        clima_pts = [(p, crescimento.clima_mensal(s)) for _, p, s in pontos_clima if p > 0]
+        peso_tot = sum(p for p, _ in clima_pts)
+
+        def _clima_medio(campo):
+            return [sum(p * c[campo][m] for p, c in clima_pts) / peso_tot for m in range(12)]
+
+        altura_util = max(h_max - h0, 1e-9)
+        ciclos_mes = [taxa_pico[m] * crescimento.DIAS_MES[m] / altura_util for m in range(12)]
+        df_mensal = pd.DataFrame({
+            "Mês": crescimento.MESES,
+            "Mínima (°C)": [round(x, 1) for x in _clima_medio("tmin")],
+            "Máxima (°C)": [round(x, 1) for x in _clima_medio("tmax")],
+            "Chuva (mm)": [round(x) for x in _clima_medio("chuva_mm")],
+            "Água disponível (%)": [round(a * 100) for a in resumo_veg["agua"]],
+            "Crescimento médio (cm/dia)": [round(t, 2) for t in taxa_media],
+            "Pico de 30 dias (cm/dia)": [round(t, 2) for t in taxa_pico],
+            "Ciclos exigidos no mês": [round(x, 2) for x in ciclos_mes],
+            "Período": ["Chuva" if i in idx_alto else "Seca" for i in range(12)],
+        })
+        df_graf = pd.DataFrame({
+            "Mês": crescimento.MESES,
+            "Chuva": [round(ciclos_mes[i], 2) if i in idx_alto else 0 for i in range(12)],
+            "Seca": [round(ciclos_mes[i], 2) if i not in idx_alto else 0 for i in range(12)],
+        })
+        st.markdown("**Ciclos que cada mês exige** (pico de 30 dias" + (", ano exigente" if exigente else "") + ")")
+        st.bar_chart(df_graf, x="Mês", y=["Chuva", "Seca"], color=["#5E22F3", "#C9B8FA"], height=240, sort=False,
+                     y_label="ciclos no mês")
+        st.dataframe(df_mensal, hide_index=True, width="stretch")
+        st.caption("Ciclos exigidos no mês = pico de 30 dias × dias do mês ÷ (altura máx. − pós-corte). A equipe de cada "
+                   "período é dimensionada pelo mês mais exigente dele.")
+
+        if not idx_alto or not idx_baixo:
+            st.warning("Deixe pelo menos um mês em cada período (chuva e seca).")
+        elif h_max > h0:
+            res_alto = crescimento.ciclos_periodo(taxas_dim, idx_alto, h_max, h0, criterio)
+            res_baixo = crescimento.ciclos_periodo(taxas_dim, idx_baixo, h_max, h0, criterio)
+            r1, r2 = st.columns(2)
+            for col, nome_p, res, idx_p in ((r1, "chuva", res_alto, idx_alto), (r2, "seca", res_baixo, idx_baixo)):
+                with col:
+                    st.markdown(f"**Período de {nome_p}** — {len(idx_p)} meses ({crescimento.rotulo_meses(idx_p)})")
+                    if res["intervalo_dias"]:
+                        st.metric("Ciclos no período (arredondado para cima)", math.ceil(res["ciclos"]),
+                                  help=f"Valor exato: {res['ciclos']:.2f} ciclos.")
+                        st.caption(
+                            f"Crescimento {res['taxa']:.2f} cm/dia → leva **{res['intervalo_dias']:.0f} dias** para ir de "
+                            f"{h0:g} a {h_max:g} cm. É o prazo máximo para a equipe percorrer o trecho inteiro e voltar ao mesmo ponto."
+                        )
+                        if criterio == "critico":
+                            st.caption(f"📌 Mês que define os ciclos da {nome_p}: **{crescimento.MESES[max(idx_p, key=lambda i: taxas_dim[i])]}** "
+                                       "(o de maior pico de 30 dias no período).")
+                    else:
+                        st.metric("Ciclos no período", "0")
+                        st.caption("Sem crescimento relevante neste período (frio ou seco demais para as espécies informadas).")
+
+            if len(cresc_pontos) > 1:
+                linhas_pts_res = []
+                for nome_pt, peso_pt, cr_pt in cresc_pontos:
+                    rp = crescimento.resumo_mensal(cr_pt)
+                    tx = [x * calibracao for x in rp[("pico_p80" if exigente else "pico") if criterio == "critico"
+                                                     else ("media_p80" if exigente else "media")]]
+                    ca = crescimento.ciclos_periodo(tx, idx_alto, h_max, h0, criterio)["ciclos"]
+                    cs = crescimento.ciclos_periodo(tx, idx_baixo, h_max, h0, criterio)["ciclos"]
+                    linhas_pts_res.append({"Ponto": nome_pt, "Peso (%)": round(100 * peso_pt / sum(p for _, p, _ in cresc_pontos), 1),
+                                           "Ciclos chuva": round(ca, 2), "Ciclos seca": round(cs, 2),
+                                           "Melhor divisão do ponto": crescimento.rotulo_meses(crescimento.escolher_periodos(tx, n_meses_chuva))})
+                linhas_pts_res.append({"Ponto": "Combinado (usado)", "Peso (%)": 100.0, "Ciclos chuva": round(res_alto["ciclos"], 2),
+                                       "Ciclos seca": round(res_baixo["ciclos"], 2), "Melhor divisão do ponto": crescimento.rotulo_meses(idx_alto)})
+                st.markdown("**Por ponto de clima** (mesmos meses de chuva e seca para todos)")
+                st.dataframe(pd.DataFrame(linhas_pts_res), hide_index=True, width="stretch")
+                st.caption("O combinado não é a média dos ciclos: é calculado sobre a curva diária combinada, e por isso fica "
+                           "abaixo da média quando as regiões chegam ao pico em datas diferentes.")
+
+            linhas_mem = []
+            rotulo_ano = "ano exigente (P80)" if exigente else "ano típico"
+            for nome_p, res, idx_p in (("Chuva", res_alto, idx_alto), ("Seca", res_baixo, idx_baixo)):
+                def _l(passo, conta, resultado):
+                    linhas_mem.append({"Período": nome_p, "Passo": passo, "Resultado": resultado, "Conta": conta})
+                if len(cresc_pontos) > 1:
+                    _l("Clima", "média diária dos pontos, ponderada pelo peso: " + "; ".join(
+                        f"{n} {100 * p / sum(q for _, q, _ in cresc_pontos):.0f}%" for n, p, _ in cresc_pontos), "curva combinada")
+                if criterio == "critico":
+                    m = max(idx_p, key=lambda i: taxas_dim[i])
+                    _l("Mês usado", "mês de maior pico de 30 dias no período", crescimento.MESES[m])
+                    for e, peso_e in resumo_veg["pesos"].items():
+                        k_e, gd_e = crescimento.ESPECIES[e]["k"], resumo_veg["gd"][e][m]
+                        _l(f"1. Crescimento térmico — {e}",
+                           f"{peso_e * 100:.0f}% da cobertura × {k_e:g} cm/grau-dia × {gd_e:.2f} graus-dia/dia "
+                           "(Ometto, pela mínima e máxima de cada dia; média do mês)", f"{peso_e * k_e * gd_e:.3f} cm/dia")
+                    _l("2. Crescimento sem falta de água", "soma das espécies", f"{resumo_veg['termico'][m]:.3f} cm/dia")
+                    _l("3. × água disponível (balanço hídrico diário)",
+                       f"água média do mês {resumo_veg['agua'][m]:.2f}; o produto é feito dia a dia (média de 2012–2024)",
+                       f"{resumo_veg['media'][m]:.3f} cm/dia (média do mês)")
+                    _l(f"4. Pico de 30 dias — {rotulo_ano}", "maior média móvel de 30 dias dentro do mês",
+                       f"{pico_base[m]:.3f} cm/dia")
+                    _l("5. × fator de calibração", f"{pico_base[m]:.3f} × {calibracao:.2f}"
+                       + ("" if fator and calibracao != 1.0 else " (sem medição de campo aplicada)"), f"{taxas_dim[m]:.3f} cm/dia")
+                else:
+                    _l(f"1 a 4. Crescimento médio de cada mês — {rotulo_ano}",
+                       "térmico × água, dia a dia, × calibração: " + "; ".join(
+                           f"{crescimento.MESES[i]} {taxas_dim[i]:.3f}" for i in idx_p), "cm/dia")
+                    _l("Média do período", f"Σ(cm/dia × dias do mês) ÷ {res['dias']:.0f} dias", f"{res['taxa']:.3f} cm/dia")
+                if res["intervalo_dias"]:
+                    _l("6. Dias até a altura máxima", f"({h_max:g} − {h0:g}) cm ÷ {res['taxa']:.3f} cm/dia",
+                       f"{res['intervalo_dias']:.1f} dias")
+                    _l("7. Ciclos no período", f"{res['dias']:.0f} dias corridos do período ÷ {res['intervalo_dias']:.1f} dias",
+                       f"{res['ciclos']:.2f} → {max(1, math.ceil(res['ciclos']))} ciclos (arredondado para cima)")
+            with st.expander("🧮 Memória de cálculo do crescimento e dos ciclos"):
+                st.caption(
+                    "Crescimento do dia (cm/dia) = Σ[ % da cobertura × cm por grau-dia × graus-dia do dia (Ometto) ] × água "
+                    "disponível do dia × fator de calibração. Pico de 30 dias = maior média móvel de 30 dias dentro do mês. "
+                    "Dias até a altura máxima = (altura máx. − pós-corte) ÷ crescimento. Ciclos = dias do período ÷ dias até "
+                    "a altura máxima."
+                )
+                st.dataframe(pd.DataFrame(linhas_mem), hide_index=True, width="stretch")
+                st.caption("Esta tabela vai para o Excel (aba 'Memória crescimento') quando os ciclos são aplicados nas abas de roçada.")
+            ciclos_sug = {"cc": max(1, math.ceil(res_alto["ciclos"])), "mc": len(idx_alto),
+                          "cs": max(1, math.ceil(res_baixo["ciclos"])), "ms": len(idx_baixo)}
+            ref = pp.CICLOS_PADRAO["rocada"]
+            st.caption(
+                f"Para comparar — referência padrão das abas de roçada: {ref['ciclos_chuva']} ciclos em {ref['meses_chuva']} meses "
+                f"de chuva e {ref['ciclos_seca']} em {ref['meses_seca']} meses de seca ({ref['fonte']})."
+            )
+            if st.button("✅ Usar estes ciclos nas abas Roçada Manual e Roçada Mecanizada", type="primary"):
+                for pre in ("man", "mec"):
+                    for chave, valor in ciclos_sug.items():
+                        st.session_state[f"{pre}_{chave}"] = valor
+                st.session_state["veg_versao"] = st.session_state.get("veg_versao", 0) + 1
+                st.session_state["veg_aplicado"] = {
+                    "valores": ciclos_sug,
+                    "texto": (f"Modelo de crescimento diário — clima {descricao_clima}; {rotulo_ano}; chuva "
+                              f"{crescimento.rotulo_meses(idx_alto)}; altura máx. {h_max:g} cm; pós-corte {h0:g} cm; "
+                              f"solo {solo.lower()}; critério: {criterio_rotulo}; calibração {calibracao:.2f}; espécies: "
+                              + ", ".join(f"{e} {p:.0f}%" for e, p in composicao.items())),
+                    "memoria": linhas_mem,
+                }
+                st.success("Ciclos e meses aplicados nas abas de roçada (você ainda pode editar lá).")
 
 # ---------------------------------------------------------------------------
 # ABA: Roçada Manual
