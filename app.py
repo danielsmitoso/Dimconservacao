@@ -1475,11 +1475,17 @@ with aba_esp:
             else:
                 col1, col2, col3 = st.columns(3)
                 meta = col1.number_input("Meta/dia por equipe", min_value=0.01, value=float(cfg["meta_dia"]), key=f"esp_meta_{nome_ativ}")
-                cchuva = col2.number_input("Ciclos/ano (cenário 1)", min_value=1, value=cfg["ciclos_chuva"], key=f"esp_cc_{nome_ativ}")
+                ajuda_periodo = ("Quantas passagens completas DENTRO dos meses deste cenário (não por ano): o cálculo "
+                                 "divide os dias do período por este número.")
+                cchuva = col2.number_input("Ciclos no período (cenário 1)", min_value=1, value=cfg["ciclos_chuva"],
+                                           key=f"esp_cc_{nome_ativ}", help=ajuda_periodo)
                 mchuva = col2.number_input("Meses (cenário 1)", min_value=1, max_value=12, value=cfg["meses_chuva"], key=f"esp_mc_{nome_ativ}")
-                cseca = col3.number_input("Ciclos/ano (cenário 2)", min_value=1, value=cfg["ciclos_seca"], key=f"esp_csc_{nome_ativ}")
+                cseca = col3.number_input("Ciclos no período (cenário 2)", min_value=1, value=cfg["ciclos_seca"],
+                                          key=f"esp_csc_{nome_ativ}", help=ajuda_periodo)
                 mseca = col3.number_input("Meses (cenário 2)", min_value=1, max_value=12, value=cfg["meses_seca"], key=f"esp_ms_{nome_ativ}")
                 st.caption(f"Fonte: {cfg['fonte']}")
+                if int(mchuva) + int(mseca) == 12:
+                    st.caption(f"ℹ️ No ano: {cchuva} + {cseca} = **{cchuva + cseca} ciclo(s)**.")
 
                 avisar_meses(mchuva, mseca)
                 resultado = dim.dimensionar_chuva_seca(quantidade, meta, cchuva, mchuva, cseca, mseca)

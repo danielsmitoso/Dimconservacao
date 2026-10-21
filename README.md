@@ -146,7 +146,9 @@ Para fechar: volte no PowerShell e aperte `Ctrl+C`.
    origem, equipes por cenário e se o parâmetro é estimativa), sem abrir cada uma.
 6. **Aba Especialistas**: EPS/barreira, defensa metálica, NC, varrição, poda. Na **NC**,
    informe o volume **anual** de não conformidades (se tiver o mensal, multiplique por 12).
-   Tem o mesmo quadro-resumo no topo.
+   Nas demais, os ciclos de cada cenário são contados **dentro dos meses daquele cenário**
+   (não por ano); quando os dois cenários somam 12 meses, o app mostra o total de ciclos no
+   ano logo abaixo. Tem o mesmo quadro-resumo no topo.
 7. **Aba Análise de Contrato**: informe quantas equipes/unidades o contrato atual prevê por
    atividade e veja déficit/excedente (com %). No topo aparecem quantas atividades estão em
    déficit, conformes ou com excedente, e o total contratado × dimensionado, separado por
